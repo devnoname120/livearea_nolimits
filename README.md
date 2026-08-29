@@ -3,9 +3,10 @@
 `livearea_nolimits.suprx` is a taiHEN user plugin for the PlayStation Vita FW
 3.60 and FW 3.65 `SceShell`. It changes the home-screen limits to:
 
-- 20 pages;
+- 26 pages;
 - 10 top-level icons per page, unchanged from the firmware;
-- 200 top-level icon slots in total;
+- 255 top-level icons in total, the maximum supported by the original
+  instruction forms;
 - 1,000 counted application/content icons instead of 500.
 
 The plugin validates every original instruction before applying any injection.

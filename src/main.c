@@ -118,9 +118,12 @@ _Static_assert(ARRAY_SIZE(patches_360) == ARRAY_SIZE(patches_365),
 static SceUID patch_uids[ARRAY_SIZE(patches_360)];
 static SceUID shell_module_id = -1;
 
-_Static_assert(LIVEAREA_TOP_LEVEL_LIMIT ==
+_Static_assert(LIVEAREA_TOP_LEVEL_LIMIT <=
 	LIVEAREA_PAGE_LIMIT * LIVEAREA_ICONS_PER_PAGE,
-	"top-level icon limit must match pages times icons per page");
+	"page capacity must cover the top-level icon limit");
+_Static_assert(LIVEAREA_TOP_LEVEL_LIMIT >
+	(LIVEAREA_PAGE_LIMIT - 1) * LIVEAREA_ICONS_PER_PAGE,
+	"page capacity must be the minimum needed for the top-level icon limit");
 
 static int get_system_version(SceKernelSystemSwVersion *version)
 {

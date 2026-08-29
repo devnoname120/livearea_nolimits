@@ -6,9 +6,9 @@
  * assembler will reject values that cannot be represented by the original
  * instruction forms.
  */
-#define LIVEAREA_PAGE_LIMIT       20
+#define LIVEAREA_PAGE_LIMIT       26
 #define LIVEAREA_ICONS_PER_PAGE   10
-#define LIVEAREA_TOP_LEVEL_LIMIT  200
+#define LIVEAREA_TOP_LEVEL_LIMIT  255
 #define LIVEAREA_ICON_LIMIT       1000
 
 #if LIVEAREA_PAGE_LIMIT > 255
