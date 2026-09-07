@@ -6,6 +6,8 @@
 
 #include "../src/recovery.c"
 
+uint32_t __stack_chk_guard;
+
 static _Alignas(4) uint8_t text[RECOVERY_TEXT_SIZE];
 static uint8_t original[RECOVERY_TEXT_SIZE];
 static uint8_t data_segment[RECOVERY_DATA_SIZE];
@@ -61,7 +63,7 @@ static void seed_text(void)
 		0, 0, 0, 0, 0, 0, 0, 0,
 		0x1B, 0x68, 0x0B, 0x93, 0x80, 0x46, 0xD8, 0xF8, 0x0C, 0x00,
 	};
-	uint32_t guard = (uint32_t)(uintptr_t)text + 0x2DA40U;
+	uint32_t guard = (uint32_t)(uintptr_t)&__stack_chk_guard;
 	unsigned int i;
 
 	memset(text, 0xCD, sizeof(text));
@@ -478,10 +480,7 @@ static void test_profiles_and_validation(void)
 		finish_case();
 	}
 	for (i = 0; i < 8; ++i) {
-		static const uint8_t masks[] = {0xF0, 0xFB, 0, 0x8F};
 		for (j = 0; j < 8; ++j) {
-			if ((masks[i % 4] & (1U << j)) == 0)
-				continue;
 			reset_case(0xC1F30F67U);
 			text[RECOVERY_ALLOCATE_OFFSET + 6 + i] ^= (uint8_t)(1U << j);
 			memcpy(original, text, sizeof(text));
@@ -490,11 +489,12 @@ static void test_profiles_and_validation(void)
 			finish_case();
 		}
 	}
-	for (i = 0; i < 3; ++i) {
+	for (i = 0; i < 4; ++i) {
 		uint32_t guard;
 		reset_case(0xC1F30F67U);
-		guard = (uint32_t)(uintptr_t)text + (i == 0 ? (uint32_t)-4 :
-			i == 1 ? (uint32_t)sizeof(text) : 2U);
+		guard = i == 0 ? (uint32_t)(uintptr_t)text + 0x2DA40U :
+			i == 1 ? (uint32_t)(uintptr_t)text + 0x2DA58U :
+			(uint32_t)(uintptr_t)&__stack_chk_guard + (i == 2 ? 4U : 2U);
 		encode_mov(text + RECOVERY_ALLOCATE_OFFSET + 6, 0xF240U, (uint16_t)guard);
 		encode_mov(text + RECOVERY_ALLOCATE_OFFSET + 10, 0xF2C0U, (uint16_t)(guard >> 16));
 		memcpy(original, text, sizeof(text));
@@ -606,7 +606,8 @@ static void test_firmware(uint32_t shell_nid, const char *path)
 	guard = low | high << 16;
 	relative = guard - 0x81000000U;
 	assert(relative <= sizeof(text) - 4 && (relative & 3U) == 0);
-	guard = (uint32_t)(uintptr_t)text + relative;
+	assert(relative == 0x2DA40U);
+	guard = (uint32_t)(uintptr_t)&__stack_chk_guard;
 	encode_mov(text + RECOVERY_ALLOCATE_OFFSET + 6, 0xF240U, (uint16_t)guard);
 	encode_mov(text + RECOVERY_ALLOCATE_OFFSET + 10, 0xF2C0U, (uint16_t)(guard >> 16));
 	memcpy(original, text, sizeof(text));
@@ -616,10 +617,24 @@ static void test_firmware(uint32_t shell_nid, const char *path)
 	printf("Real recovery bytes: identity, seven patches, relocated prologue and rollback passed: %s\n", path);
 }
 
+static void test_imported_stack_guard(void)
+{
+	uint32_t guard = (uint32_t)(uintptr_t)&__stack_chk_guard;
+	assert((uint32_t)(guard - (uint32_t)(uintptr_t)text) >= sizeof(text));
+	reset_case(0x3F76E38FU);
+	encode_mov(text + RECOVERY_ALLOCATE_OFFSET + 6, 0xF240U, (uint16_t)guard);
+	encode_mov(text + RECOVERY_ALLOCATE_OFFSET + 10, 0xF2C0U, (uint16_t)(guard >> 16));
+	memcpy(original, text, sizeof(text));
+	assert(recovery_start(0x5549BF1FU) == 0 && call_start(71) == 0);
+	assert(live_allocator && injection_calls == 7);
+	finish_case();
+}
+
 int main(int argc, char **argv)
 {
 	int arg;
 	assert(argc % 2 == 1);
+	test_imported_stack_guard();
 	test_recovery_model();
 	test_wide_top_level_recovery();
 	test_profiles_and_validation();

@@ -13,6 +13,12 @@ assembled replacements, and taiHEN prologue relocation checks. Both ARM build
 configurations have been built. These are offline results: restoration on a Vita
 with a pre-existing hidden application library has not yet been verified.
 
+An additional import-validation defect in v1.4.0/v1.5.0 is corrected in v1.6.0.
+The old validator rejected the loader-resolved stack-guard
+address, so the recovery extension could silently fall back to the native limits.
+See the imported-guard regression below; the reported shutdown still requires
+an affected-device retest.
+
 ## Why installation order matters
 
 The normal `SceShell` insertion path and boot recovery have separate limits.
@@ -71,11 +77,39 @@ including when a custom top-level limit is below the total page-slot capacity.
 Folder contents do not contribute to this
 ordinary-page count. Count-query errors propagate without changing output slots.
 
-The allocator's first 24 bytes are checked, including the register/opcode bits of
-its relocated MOVW/MOVT pair and the resulting word-aligned address inside text.
-The absolute stack-guard import-slot address is not compared to a fixed dump base.
+The allocator's first 24 bytes are checked, including all register, opcode and
+address bits of its relocated MOVW/MOVT pair. The address must match the plugin's
+own loader-resolved `__stack_chk_guard` import from SceLibKernel. It is not a
+recovery-text-relative address or the value stored in the guard variable.
 The real taiHEN transformer requires an eight-byte jump here and preserves ten
 bytes of displaced instructions; both relocator passes are tested.
+
+### Imported-guard regression
+
+In both inspected retail recovery images, the import descriptor at `0x2C538`
+names library `0xCAE9ACE6`. Its variable NID table at `0x2D3C4` names
+`__stack_chk_guard` (`0x93B8AA67`); the reference-table slot at `0x2DA40` points
+to relocation records at `0x2DA58`. The records explicitly relocate the allocator
+MOVW at `0x5F56` and MOVT at `0x5F5A` to the imported variable, with zero addends.
+These offsets are relative to segment 0. The placeholder is not runtime storage
+for the variable, as independently seen in the earlier PAF guard investigation.
+
+The old host fixture incorrectly relocated this operand into recovery text,
+matching the validator's incorrect assumption. A regression using a separate
+imported guard address failed against v1.5.0: the native start was called but
+the allocator hook and all seven patches were skipped. The corrected validator
+accepts that exact import, rejects the old reference-table/record placeholders,
+and rejects every changed opcode, register or address bit. All profiles use it.
+
+The [issue #2 reproduction](https://github.com/devnoname120/livearea_nolimits/issues/2#issuecomment-5574338737)
+provides a database with 510 visible application rows, one hidden row, 52 folder
+icons and 96 ordinary-page entries. SQLite integrity and foreign-key checks pass.
+The video shows a database update followed by shutdown; it does not identify a
+faulting instruction. With counts obtained using the inspected LSDB SQL, the
+original ARM recovery planner returns `min(1, 500 - 510) = -10`; the patched
+planner returns `1`. This reproduces the skipped-extension defect and invalid
+native budget, not the complete device shutdown or successful materialization.
+The uploaded database and video remain local test inputs, not repository assets.
 
 ## Module lifecycle
 
@@ -150,6 +184,11 @@ python3 tests/test_recovery_firmware.py \
   /path/to/retail360-recovery.text.bin \
   /path/to/retail365-recovery.text.bin
 ```
+
+Optionally append `--database /path/to/copied-app.db` to derive planning inputs
+from a saved database using the inspected LSDB count queries. This opens the
+copy read-only, reports only counts, and verifies that its hash is unchanged.
+The instruction test also checks the firmware's guard-import relocation records.
 
 The 500-visible/two-hidden regression is exercised with original and patched ARM
 instructions. Host tests separately model materialization onto a new eleventh

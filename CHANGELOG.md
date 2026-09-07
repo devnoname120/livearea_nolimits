@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.6.0 - 2026-09-07
+
+### Fixed
+
+- Validate the recovery allocator's stack-guard address against the actual
+  SceLibKernel import, not the recovery module's text range. The old check could
+  silently leave the native 500-application recovery limits active.
+- Correct the recovery test fixture's import relocation and add regressions for
+  the rejected runtime address, all guard-operand bits, the real firmware import
+  records, and the reported 510-visible/one-hidden state. Affected-device shutdown
+  and restoration still require a retest; these results are offline validation.
+
+### Unchanged
+
+- Release build with runtime logging disabled and the icon-cache correction
+  enabled for retail 3.60, retail 3.65, and PTEL 3.60.
+- 500 top-level icons, 50 pages, 10 icons per page, and the separate 1,000
+  counted-application limit. No database-format change is introduced; recovery
+  continues to use the existing firmware algorithm.
+
 ## 1.5.0 - 2026-09-07
 
 ### Fixed

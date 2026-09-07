@@ -7,6 +7,9 @@
 #include "limits.h"
 #include "recovery.h"
 
+/* The loader binds both modules to the same SceLibKernel variable. */
+extern uint32_t __stack_chk_guard;
+
 #define RECOVERY_TEXT_SIZE 0x3E9E8U
 #define RECOVERY_DATA_SIZE 0x3094U
 #define RECOVERY_ALLOCATE_OFFSET 0x5F50U
@@ -148,9 +151,7 @@ static int verify_recovery(const SceKernelModuleInfo *info)
 		read_mov_imm(entry + 10, 0xF2C0U, &high) < 0)
 		return -1;
 	guard = low | high << 16;
-	/* The loader relocates the stack-guard import slot inside segment 0. */
-	if ((uint32_t)(guard - (uint32_t)(uintptr_t)text) > RECOVERY_TEXT_SIZE - 4 ||
-		(guard & 3U) != 0)
+	if (guard != (uint32_t)(uintptr_t)&__stack_chk_guard)
 		return -1;
 	return 0;
 }

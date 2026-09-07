@@ -14,10 +14,16 @@ It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Version 1.5.0 is built in Release mode with runtime logging disabled,
+writes. Version 1.6.0 is built in Release mode with runtime logging disabled,
 including when the icon-cache correction is enabled.
 
-Version 1.5.0 provides the same features on every supported firmware profile:
+Version 1.6.0 corrects the recovery allocator's imported stack-guard validation.
+In v1.4.0/v1.5.0, the incorrect address check could silently leave recovery at
+the native 500-application limit. The correction passes offline regression and
+firmware tests; the reported shutdown during database updating still needs an
+affected-device retest. See [the recovery notes](docs/recovery.md).
+
+The feature parity introduced in v1.5.0 is retained on every supported profile:
 
 | Feature | Retail 3.60 | Retail 3.65 | PTEL 3.60 |
 | --- | --- | --- | --- |
@@ -107,7 +113,8 @@ failure; an existing log from an older build is left untouched.
 
 For diagnostic builds only, also pass `-DLIVEAREA_ICON_CACHE_LOGGING=ON`.
 The older v1.3.0 asset has startup diagnostics enabled and remains unchanged;
-the v1.4.0 and v1.5.0 release assets disable them. See [the changelog](CHANGELOG.md).
+the v1.4.0, v1.5.0, and v1.6.0 release assets disable them. See
+[the changelog](CHANGELOG.md).
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 

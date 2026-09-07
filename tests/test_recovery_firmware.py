@@ -6,6 +6,8 @@ Usage: python3 tests/test_recovery_firmware.py PLUGIN_ELF RECOVERY_TEXT [...]
 """
 from pathlib import Path
 import argparse
+import hashlib
+import sqlite3
 import struct
 
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_HOOK_CODE
@@ -105,11 +107,45 @@ def branch_falls_through(text: bytes, offset: int, register: int, value: int,
     return machine.reg_read(UC_ARM_REG_PC) == BASE + fallthrough
 
 
-def check_image(path: Path, symbols: dict[str, bytes]) -> None:
+def check_guard_import(text: bytes) -> None:
+    first, end = struct.unpack_from("<II", text, 0x2C294 + 44)
+    matches = []
+    while first < end:
+        size = struct.unpack_from("<H", text, first)[0]
+        assert size == 0x34 and first + size <= end
+        if struct.unpack_from("<I", text, first + 16)[0] == 0xCAE9ACE6:
+            count = struct.unpack_from("<H", text, first + 8)[0]
+            nids, entries = struct.unpack_from("<II", text, first + 36)
+            for index in range(count):
+                if struct.unpack_from("<I", text, nids - BASE + 4 * index)[0] != 0x93B8AA67:
+                    continue
+                references = struct.unpack_from("<I", text, entries - BASE + 4 * index)[0] - BASE
+                header = struct.unpack_from("<I", text, references)[0]
+                assert header & 0xF000000F == 0
+                stop = references + (header >> 4)
+                assert references + 4 <= stop <= len(text)
+                cursor = references + 4
+                while cursor < stop:
+                    flags, offset = struct.unpack_from("<II", text, cursor)
+                    assert flags & 15 in (1, 2)
+                    addend = flags >> 16
+                    if flags & 15 == 2:
+                        addend = struct.unpack_from("<I", text, cursor + 8)[0]
+                    matches.append(((flags >> 4) & 15, offset, (flags >> 8) & 255, addend))
+                    cursor += 8 if flags & 15 == 1 else 12
+                assert cursor == stop
+        first += size
+    assert (0, 0x5F56, 47, 0) in matches, "Allocator MOVW must bind the imported guard"
+    assert (0, 0x5F5A, 48, 0) in matches, "Allocator MOVT must bind the imported guard"
+
+
+def check_image(path: Path, symbols: dict[str, bytes],
+                database_counts: tuple[int, int] | None = None) -> None:
     stock = path.read_bytes()
     assert len(stock) == 0x3E9E8
     nid = struct.unpack_from("<I", stock, 0x2C294 + 52)[0]
     assert nid in (0xC1F30F67, 0x3F76E38F)
+    check_guard_import(stock)
     modified = bytearray(stock)
     for offset, original, symbol in PATCHES:
         replacement = symbols[symbol]
@@ -134,6 +170,17 @@ def check_image(path: Path, symbols: dict[str, bytes]) -> None:
         assert native_capacity(text, 0xC724, 500, 2, -123) == -123
     assert native_capacity(stock, 0xC6B4, 500, 2) == 0
     assert native_capacity(patched, 0xC6B4, 500, 2) == 2
+    assert native_capacity(stock, 0xC6B4, 510, 1) == -10
+    assert native_capacity(patched, 0xC6B4, 510, 1) == 1
+    if database_counts:
+        displayed, hidden = database_counts
+        assert 0 < hidden and 0 <= displayed <= 1000
+        before = native_capacity(stock, 0xC6B4, displayed, hidden)
+        after = native_capacity(patched, 0xC6B4, displayed, hidden)
+        assert before == min(hidden, 500 - displayed)
+        assert after == min(hidden, 1000 - displayed)
+        print(f"  Database-derived counts: {displayed} visible, {hidden} hidden; "
+              f"native stock budget {before}, patched budget {after}")
     for text, limit in ((stock, 10), (patched, 50)):
         for pages in (9, 10, 11, 25, 26, 27, 49, 50, 51):
             assert branch_falls_through(text, 0x6084, UC_ARM_REG_R4, pages, 0x6088) == (pages < limit)
@@ -143,16 +190,34 @@ def check_image(path: Path, symbols: dict[str, bytes]) -> None:
     print(f"Native ARM recovery passed: {path} (NID 0x{nid:08X})")
     print("  Stock 500+2 hidden => 0; assembled fix => 2; three native planning functions,")
     print("  two admission branches, page creation/search bounds and LSDB errors verified")
+    print("  Allocator MOVW/MOVT are zero-addend SceLibKernel guard-import relocations")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("plugin_elf", type=Path)
     parser.add_argument("recovery_text", nargs="+", type=Path)
+    parser.add_argument("--database", type=Path)
     args = parser.parse_args()
+    counts = None
+    if args.database:
+        before = hashlib.sha256(args.database.read_bytes()).digest()
+        database = sqlite3.connect(args.database.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+        try:
+            database.execute("PRAGMA query_only=ON")
+            visible = database.execute(
+                "SELECT count(*) FROM tbl_appinfo_icon WHERE type!=? AND pageId != "
+                "(SELECT pageId FROM tbl_appinfo_page WHERE pageNo=?)", (5, -100000000)).fetchone()[0]
+            hidden = database.execute(
+                "SELECT count(*) FROM tbl_appinfo_icon WHERE pageId IN "
+                "(SELECT pageId FROM tbl_appinfo_page WHERE pageNo=?)", (-100000000,)).fetchone()[0]
+            counts = (visible, hidden)
+        finally:
+            database.close()
+        assert hashlib.sha256(args.database.read_bytes()).digest() == before
     symbols = elf_symbols(args.plugin_elf)
     for path in args.recovery_text:
-        check_image(path, symbols)
+        check_image(path, symbols, counts)
 
 
 if __name__ == "__main__":
