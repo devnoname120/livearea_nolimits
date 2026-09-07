@@ -1,7 +1,13 @@
 #include "icon_cache_trial.h"
 
+#ifndef LIVEAREA_ICON_CACHE_LOGGING
+#define LIVEAREA_ICON_CACHE_LOGGING 0
+#endif
+
+#if LIVEAREA_ICON_CACHE_LOGGING
 #include <psp2/io/fcntl.h>
 #include <psp2/kernel/clib.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <taihen.h>
@@ -169,6 +175,7 @@ static int (*g_unlock_cache)(void *mutex);
 static void *g_cache_mutex;
 static const uint32_t *g_cache_clock;
 static IconSelection *g_selection;
+#if LIVEAREA_ICON_CACHE_LOGGING
 static SceUID g_log_fd = -1;
 
 static void trial_log(const char *message, SceSize size)
@@ -176,6 +183,7 @@ static void trial_log(const char *message, SceSize size)
 	if (g_log_fd >= 0)
 		sceIoWrite(g_log_fd, message, size);
 }
+#endif
 
 static int is_icon_cache(const PafCache *cache)
 {
@@ -359,14 +367,17 @@ void icon_cache_trial_stop(void)
 	g_selection = NULL;
 	g_image_handle_vtable = NULL;
 	g_get_surface = NULL;
+#if LIVEAREA_ICON_CACHE_LOGGING
 	if (g_log_fd >= 0) {
 		sceIoClose(g_log_fd);
 		g_log_fd = -1;
 	}
+#endif
 }
 
 static int trial_failure(const char *stage, uint32_t detail)
 {
+#if LIVEAREA_ICON_CACHE_LOGGING
 	char message[96];
 	/* This plugin does not initialize newlib's application runtime. */
 	int length = sceClibSnprintf(message, sizeof(message),
@@ -374,9 +385,14 @@ static int trial_failure(const char *stage, uint32_t detail)
 	if (length > 0)
 		trial_log(message, (size_t)length < sizeof(message)
 			? (size_t)length : sizeof(message) - 1);
+#else
+	(void)stage;
+	(void)detail;
+#endif
 	return -1;
 }
 
+#if LIVEAREA_ICON_CACHE_LOGGING
 static void trial_log_bytes(const uint8_t *text, uint32_t offset, size_t size)
 {
 	static const char hex[] = "0123456789ABCDEF";
@@ -413,6 +429,7 @@ static void trial_log_consumer_code(const uint8_t *text, uint32_t data_address)
 	trial_log_bytes(text, PAF_HANDLE_GET_OFFSET, 14);
 	trial_log_bytes(text, PAF_HANDLE_VTABLE_OFFSET + 8, 4);
 }
+#endif
 
 static int install_paf_hook(void)
 {
@@ -421,7 +438,6 @@ static int install_paf_hook(void)
 	uint8_t *text;
 	int result;
 	const char *hook_stage = "consumer hook";
-	static const char active[] = "icon-cache trial active (LRU + consumer reload)\n";
 
 	g_install_attempted = 1;
 	paf.size = sizeof(paf);
@@ -458,7 +474,9 @@ static int install_paf_hook(void)
 		text + PAF_CLOCK_LOAD_OFFSET + 4, 1, data_address + PAF_CLOCK_OFFSET))
 		return trial_failure("PAF cache data references", PAF_MUTEX_OFFSET);
 	if (!valid_consumer_code(text, data_address)) {
+#if LIVEAREA_ICON_CACHE_LOGGING
 		trial_log_consumer_code(text, data_address);
+#endif
 		return trial_failure("PAF consumer bytes", PAF_APPLY_OFFSET);
 	}
 	g_release_surface = (void *)((uintptr_t)text + PAF_RELEASE_OFFSET + 1);
@@ -485,7 +503,10 @@ static int install_paf_hook(void)
 		g_apply_hook = -1;
 		goto hook_failed;
 	}
+#if LIVEAREA_ICON_CACHE_LOGGING
+	static const char active[] = "icon-cache trial active (LRU + consumer reload)\n";
 	trial_log(active, sizeof(active) - 1);
+#endif
 	return 0;
 
 hook_failed:
@@ -521,11 +542,12 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 	const SceKernelModuleInfo *shell_info)
 {
 	int result = -1;
-	static const char waiting[] = "icon-cache trial waiting for icon pool\n";
 
 	g_install_attempted = 0;
+#if LIVEAREA_ICON_CACHE_LOGGING
 	g_log_fd = sceIoOpen("ur0:/data/livearea_nolimits-icon-cache-trial.log",
 		SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+#endif
 	if (shell_nid != RETAIL_360_SHELL_NID) {
 		trial_failure("shell identity", shell_nid);
 		goto fail;
@@ -556,7 +578,10 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 		trial_failure("shell initializer hook", (uint32_t)g_pool_init_hook);
 		goto fail;
 	}
+#if LIVEAREA_ICON_CACHE_LOGGING
+	static const char waiting[] = "icon-cache trial waiting for icon pool\n";
 	trial_log(waiting, sizeof(waiting) - 1);
+#endif
 	return 0;
 
 fail:

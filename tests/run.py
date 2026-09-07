@@ -36,19 +36,20 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
         "-I", str(root / "tests/stubs"), str(root / "tests/test_startup.c"),
         str(replacements), "-o", str(integration)], check=True)
     subprocess.run([str(integration), *sys.argv[1:]], check=True)
-    trial = work / "test_icon_cache_trial"
-    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
-        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
-        "-fsanitize=address,undefined", "-I", str(root / "tests/stubs"),
-        str(root / "tests/test_icon_cache_trial.c"), "-o", str(trial)], check=True)
     paf_text = os.environ.get("LIVEAREA_TEST_PAF_TEXT")
-    subprocess.run([str(trial), *([paf_text] if paf_text else [])], check=True)
-    consumer = work / "test_icon_consumer"
-    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
-        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
-        "-fsanitize=address,undefined", "-I", str(root / "tests/stubs"),
-        str(root / "tests/test_icon_consumer.c"), "-o", str(consumer)], check=True)
-    subprocess.run([str(consumer)], check=True)
+    for logging in (False, True):
+        definitions = ["-DLIVEAREA_ICON_CACHE_LOGGING=1"] if logging else []
+        for name, arguments in (
+            ("test_icon_cache_trial", [paf_text] if paf_text else []),
+            ("test_icon_consumer", []),
+        ):
+            binary = work / f"{name}-logging-{int(logging)}"
+            subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+                "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+                "-fsanitize=address,undefined", *definitions,
+                "-I", str(root / "tests/stubs"),
+                str(root / "tests" / f"{name}.c"), "-o", str(binary)], check=True)
+            subprocess.run([str(binary), *arguments], check=True)
     substitute_path = os.environ.get("LIVEAREA_TEST_SUBSTITUTE")
     if substitute_path:
         if not paf_text:

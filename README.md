@@ -15,7 +15,8 @@ It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Release builds do not create or write runtime log files.
+writes. Current source builds disable runtime logging by default, including
+when the icon-cache correction is enabled.
 
 Pages after the original first ten use the firmware's default page appearance.
 The plugin intentionally leaves the ten-entry custom theme/layout table bounds
@@ -62,9 +63,15 @@ docker run --rm --platform linux/amd64 \
 
 The result is `build/livearea_nolimits.suprx`.
 
-The v1.3 GitHub release binary enables the retail 3.60 icon-cache correction. To
-reproduce that configuration from source, configure with
-`-DLIVEAREA_ICON_CACHE_TRIAL=ON`.
+Enable the retail 3.60 icon-cache correction with
+`-DLIVEAREA_ICON_CACHE_TRIAL=ON`. Logging is controlled separately by
+`LIVEAREA_ICON_CACHE_LOGGING`, which defaults to `OFF`. Logless builds do not
+open, truncate, write or delete the diagnostic file, even on validation or hook
+failure; an existing log from an older build is left untouched.
+
+For diagnostic builds only, also pass `-DLIVEAREA_ICON_CACHE_LOGGING=ON`.
+The already-published v1.3.0 asset has startup diagnostics enabled; this
+source change does not replace that release asset.
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 

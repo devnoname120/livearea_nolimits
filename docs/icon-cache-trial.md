@@ -162,7 +162,8 @@ Success means exactly one texture was released. Empty scans and scans without
 an eligible texture return zero, not false progress. The existing allocation
 caller retries after each successful eviction and may request another victim
 if still necessary. There are no allocations, file writes or formatting calls
-in the new collector/release path. Startup diagnostics remain available.
+in the new collector/release path. Startup diagnostics remain available through
+the separate, default-off `LIVEAREA_ICON_CACHE_LOGGING` build option.
 
 ## Consumer reload correction
 
@@ -247,6 +248,14 @@ would pull application-runtime initialization into this `-nostdlib` plugin.
 
 ## Build and verify
 
+Current source builds retain the cache correction with
+`LIVEAREA_ICON_CACHE_TRIAL=ON` but omit logging by default. The separate
+`LIVEAREA_ICON_CACHE_LOGGING=ON` option is only needed for diagnostic builds.
+Leaving it off removes diagnostic formatting and file I/O, including file
+creation/truncation, without removing the consumer or LRU hooks. Existing log
+files are not deleted. Historical deployment logs below came from logging-enabled
+builds; the published v1.3.0 asset also still has logging enabled.
+
 ```sh
 docker run --rm --platform linux/amd64 \
   --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
@@ -290,6 +299,9 @@ one-time deferred installation, relocated address validation, and cleanup.
 They also cover oldest-first ordering, age-zero ties, unsigned clock wrap,
 exactly one victim per successful scan, protected/non-reloadable entries,
 nested selection contexts, lock/scan failures, and repeated eviction cycles.
+The policy and consumer suites run both with logging disabled and enabled;
+the disabled variant fails on any attempted diagnostic formatting or log-file
+open, write or close, including startup and guard-failure paths.
 They do not prove device behavior.
 
 On 7 September 2026, the deferred broad-scan build's ASan/UBSan run passed with both retail shell
@@ -301,10 +313,11 @@ Artifact hashes and the deployment boundary are recorded separately in
 `build/icon-cache-trial/deferred-scan-verification.json` so the earlier failed
 activation records are not overwritten.
 
-The replacement writes `ur0:/data/livearea_nolimits-icon-cache-trial.log`,
+Logging-enabled builds write `ur0:/data/livearea_nolimits-icon-cache-trial.log`,
 containing an `active (LRU + consumer reload)` marker or a stage-specific failure
 with a hexadecimal detail/error code. It no longer writes per-eviction lines.
-The logging code is compiled only when the trial option is enabled.
+Logging code and the file-I/O stub library are included only when both
+`LIVEAREA_ICON_CACHE_TRIAL` and `LIVEAREA_ICON_CACHE_LOGGING` are enabled.
 
 The single-victim replacement also passed the ASan/UBSan suite with actual
 firmware inputs and the relocator checks. Both build configurations compiled

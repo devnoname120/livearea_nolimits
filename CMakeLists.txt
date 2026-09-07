@@ -15,6 +15,8 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 option(LIVEAREA_ICON_CACHE_TRIAL
 	"Enable the retail 3.60 icon texture eviction trial" OFF)
+option(LIVEAREA_ICON_CACHE_LOGGING
+	"Enable icon-cache startup diagnostics" OFF)
 
 add_executable(livearea_nolimits
 	src/main.c
@@ -24,7 +26,10 @@ add_executable(livearea_nolimits
 if(LIVEAREA_ICON_CACHE_TRIAL)
 	target_sources(livearea_nolimits PRIVATE src/icon_cache_trial.c)
 	target_compile_definitions(livearea_nolimits PRIVATE LIVEAREA_ICON_CACHE_TRIAL=1)
-	target_link_libraries(livearea_nolimits SceIofilemgr_stub)
+	if(LIVEAREA_ICON_CACHE_LOGGING)
+		target_compile_definitions(livearea_nolimits PRIVATE LIVEAREA_ICON_CACHE_LOGGING=1)
+		target_link_libraries(livearea_nolimits SceIofilemgr_stub)
+	endif()
 endif()
 
 target_compile_options(livearea_nolimits PRIVATE

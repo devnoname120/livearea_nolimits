@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <psp2/io/fcntl.h>
+#include <psp2/kernel/clib.h>
+
+#ifndef LIVEAREA_ICON_CACHE_LOGGING
+#define LIVEAREA_ICON_CACHE_LOGGING 0
+#endif
+
 #include "../src/icon_cache_trial.c"
 
 uint32_t __stack_chk_guard;
@@ -45,6 +52,16 @@ static int g_consumer_hook_failure;
 static int g_consumer_hook_calls;
 static int g_consumer_hook_releases;
 static void (*g_cache_unlocked)(void);
+
+static void check_log(const char *message)
+{
+#if LIVEAREA_ICON_CACHE_LOGGING
+	assert(strstr(g_log_contents, message));
+#else
+	(void)message;
+	assert(!g_log_open && !g_log_writes && !g_log_size && !g_log_contents[0]);
+#endif
+}
 
 static int lock_cache(void *mutex)
 {
@@ -217,6 +234,7 @@ int test_tai_continue(tai_hook_ref_t ref, ...)
 
 SceUID sceIoOpen(const char *path, int flags, int mode)
 {
+	assert(LIVEAREA_ICON_CACHE_LOGGING && "logless builds must not open files");
 	assert(strstr(path, "icon-cache-trial.log"));
 	assert(flags == (SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC) && mode == 0666);
 	assert(!g_log_open);
@@ -230,6 +248,7 @@ SceUID sceIoOpen(const char *path, int flags, int mode)
 
 int sceClibSnprintf(char *dst, SceSize size, const char *format, ...)
 {
+	assert(LIVEAREA_ICON_CACHE_LOGGING && "logless builds must not format diagnostics");
 	va_list args;
 	va_start(args, format);
 	int length = vsnprintf(dst, size, format, args);
@@ -239,6 +258,7 @@ int sceClibSnprintf(char *dst, SceSize size, const char *format, ...)
 
 int sceIoWrite(SceUID fd, const void *data, SceSize size)
 {
+	assert(LIVEAREA_ICON_CACHE_LOGGING && "logless builds must not write files");
 	assert(fd == 8 && g_log_open && data && size);
 	assert(!g_mutex_depth);
 	assert(g_log_size + size < sizeof(g_log_contents));
@@ -251,6 +271,7 @@ int sceIoWrite(SceUID fd, const void *data, SceSize size)
 
 int sceIoClose(SceUID fd)
 {
+	assert(LIVEAREA_ICON_CACHE_LOGGING && "logless builds must not close files");
 	assert(fd == 8 && g_log_open);
 	g_log_open = 0;
 	return 0;
@@ -273,7 +294,7 @@ static void rejected(uint32_t shell_nid, const SceKernelModuleInfo *shell)
 	assert(g_pool_init_hook == -1);
 	assert(g_apply_hook == -1 && !g_image_handle_vtable && !g_get_surface);
 	assert(!g_icon_pool_slot && !g_release_surface && !g_stock_evict);
-	assert(strstr(g_log_contents, "failed: 0x"));
+	check_log("failed: 0x");
 }
 
 int main(int argc, char **argv)
@@ -399,11 +420,11 @@ int main(int argc, char **argv)
 	int queries = g_paf_queries;
 	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
 	assert(g_pool_init_hook == 457 && g_scan_hook < 0 && g_paf_queries == queries);
-	assert(strstr(g_log_contents, "waiting for icon pool"));
+	check_log("waiting for icon pool");
 	g_query_error = 0;
 	initialize_icon_pool();
 	assert(g_original_init_calls == 1 && g_scan_hook == 456 && g_paf_queries == queries + 1);
-	assert(strstr(g_log_contents, "active (LRU + consumer reload)"));
+	check_log("active (LRU + consumer reload)");
 	assert(g_apply_hook == 458);
 	initialize_icon_pool();
 	assert(g_original_init_calls == 2 && g_paf_queries == queries + 1);
@@ -415,8 +436,10 @@ int main(int argc, char **argv)
 	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = NULL;
 	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
 	initialize_icon_pool();
-	assert(g_scan_hook < 0 && g_pool_init_hook == 457 && g_log_open);
-	assert(g_init_hook_releases == 1 && strstr(g_log_contents, "PAF lookup failed"));
+	assert(g_scan_hook < 0 && g_pool_init_hook == 457);
+	assert(g_log_open == LIVEAREA_ICON_CACHE_LOGGING);
+	assert(g_init_hook_releases == 1);
+	check_log("PAF lookup failed");
 	queries = g_paf_queries;
 	initialize_icon_pool();
 	assert(g_paf_queries == queries);
@@ -428,14 +451,14 @@ int main(int argc, char **argv)
 	init_entry[0] ^= 1;
 	g_init_hook_failure = 1;
 	rejected(RETAIL_360_SHELL_NID, &shell);
-	assert(strstr(g_log_contents, "shell initializer hook failed"));
+	check_log("shell initializer hook failed");
 	g_init_hook_failure = 0;
 	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = &pool;
 
 	rejected(0x5549BF1F, &shell);
-	assert(strstr(g_log_contents, "shell identity failed: 0x5549BF1F"));
+	check_log("shell identity failed: 0x5549BF1F");
 	rejected(RETAIL_360_SHELL_NID, NULL);
-	assert(strstr(g_log_contents, "shell pool slot"));
+	check_log("shell pool slot");
 	shell.segments[1].memsz = ICON_POOL_SLOT + sizeof(IconPool *) - 1;
 	rejected(RETAIL_360_SHELL_NID, &shell);
 	shell.segments[1].memsz = ICON_POOL_SLOT + 32;
@@ -454,7 +477,7 @@ int main(int argc, char **argv)
 	for (i = 0; i < sizeof(expected_scan_entry); ++i) {
 		g_paf_text[PAF_SCAN_OFFSET + i] ^= 1;
 		rejected(RETAIL_360_SHELL_NID, &shell);
-		assert(strstr(g_log_contents, "PAF scan bytes failed: 0x00015E6A"));
+		check_log("PAF scan bytes failed: 0x00015E6A");
 		g_paf_text[PAF_SCAN_OFFSET + i] ^= 1;
 	}
 	for (i = 0; i < sizeof(expected_evict) + sizeof(expected_release); ++i) {
@@ -479,7 +502,7 @@ int main(int argc, char **argv)
 		for (unsigned int bit = 0; bit < 8; ++bit) {
 			*byte ^= 1U << bit;
 			rejected(RETAIL_360_SHELL_NID, &shell);
-			assert(strstr(g_log_contents, "PAF cache data references"));
+			check_log("PAF cache data references");
 			*byte ^= 1U << bit;
 		}
 	}
@@ -493,30 +516,30 @@ int main(int argc, char **argv)
 			for (unsigned int bit = 0; bit < 8; ++bit) {
 				*byte ^= 1U << bit;
 				rejected(RETAIL_360_SHELL_NID, &shell);
-				assert(strstr(g_log_contents, "PAF consumer bytes"));
-				assert(strstr(g_log_contents, "icon-cache PAF text=0x"));
-				assert(strstr(g_log_contents, "icon-cache bytes +0015F9E2:"));
-				assert(strstr(g_log_contents, "icon-cache bytes +00013344:"));
-				assert(strstr(g_log_contents, "icon-cache bytes +00014672:"));
-				assert(strstr(g_log_contents, "icon-cache bytes +002E1074:"));
+				check_log("PAF consumer bytes");
+				check_log("icon-cache PAF text=0x");
+				check_log("icon-cache bytes +0015F9E2:");
+				check_log("icon-cache bytes +00013344:");
+				check_log("icon-cache bytes +00014672:");
+				check_log("icon-cache bytes +002E1074:");
 				*byte ^= 1U << bit;
 			}
 		}
 	}
 	g_consumer_hook_failure = 1;
 	rejected(RETAIL_360_SHELL_NID, &shell);
-	assert(strstr(g_log_contents, "consumer hook failed"));
+	check_log("consumer hook failed");
 	g_consumer_hook_failure = 0;
 	int consumer_releases = g_consumer_hook_releases;
 	g_hook_failure = 1;
 	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) < 0);
 	assert(!g_icon_pool_slot && !g_release_surface && !g_log_open && !g_stock_evict);
-	assert(strstr(g_log_contents, "scan hook failed: 0xFFFFFFFF"));
+	check_log("scan hook failed: 0xFFFFFFFF");
 	assert(g_hook_releases == 0);
 	assert(g_apply_hook < 0 && g_consumer_hook_releases == consumer_releases + 1);
 	g_hook_failure = 0;
 	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
-	assert(strstr(g_log_contents, "active (LRU + consumer reload)"));
+	check_log("active (LRU + consumer reload)");
 	assert(!strstr(g_log_contents, "icon-cache bytes"));
 	assert(g_apply_hook == 458 && g_image_handle_vtable == g_paf_text + PAF_HANDLE_VTABLE_OFFSET);
 	assert((uintptr_t)g_get_surface == (uintptr_t)g_paf_text + PAF_GET_SURFACE_OFFSET + 1);
@@ -676,6 +699,9 @@ int main(int argc, char **argv)
 	free(g_paf_data);
 	free(shell_data);
 	free(shell_text);
+	puts(LIVEAREA_ICON_CACHE_LOGGING
+		? "Logging enabled: startup and failure diagnostics verified"
+		: "Logging disabled: no file operations or diagnostic formatting on any tested path");
 	puts("Icon cache trial: deferred startup, LRU ordering/ties/wrap, one victim, protected surfaces, reloadability, nested locking, metadata, no hot-path I/O, validation and cleanup passed");
 	return 0;
 }
