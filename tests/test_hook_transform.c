@@ -55,7 +55,7 @@ static void check_entry(FILE *file, uint_tptr base, uint_tptr offset,
 
 int main(int argc, char **argv)
 {
-	assert(argc == 7);
+	assert(argc >= 7);
 	FILE *file = fopen(argv[1], "rb");
 	assert(file);
 	uint_tptr rejected = parse_offset(argv[2]);
@@ -74,5 +74,12 @@ int main(int argc, char **argv)
 	for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); ++i)
 		check_entry(file, bases[i], initializer, SUBSTITUTE_OK, 8, 10);
 	assert(fclose(file) == 0);
+	for (int arg = 7; arg < argc; ++arg) {
+		file = fopen(argv[arg], "rb");
+		assert(file);
+		for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); ++i)
+			check_entry(file, bases[i], 0x5F50, SUBSTITUTE_OK, 8, 10);
+		assert(fclose(file) == 0);
+	}
 	return 0;
 }

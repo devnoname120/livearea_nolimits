@@ -12,6 +12,11 @@ SceUID taiInjectData(SceUID modid, int segment, uint32_t offset,
 int taiInjectRelease(SceUID uid);
 
 typedef uintptr_t tai_hook_ref_t;
+#define TAI_ANY_LIBRARY 0xFFFFFFFFU
+SceUID taiHookFunctionImport(tai_hook_ref_t *ref, const char *module,
+	uint32_t library, uint32_t nid, const void *hook);
+int taiGetModuleExportFunc(const char *module, uint32_t library, uint32_t nid,
+	uintptr_t *function);
 SceUID taiHookFunctionOffset(tai_hook_ref_t *ref, SceUID modid, int segment,
 	uint32_t offset, int thumb, const void *hook);
 int taiHookRelease(SceUID uid, tai_hook_ref_t ref);

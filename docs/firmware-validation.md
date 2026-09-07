@@ -1,9 +1,15 @@
 # Firmware profile validation
 
-Version 1.2 selects the loaded `SceShell` by module NID, then checks the exact
-text-segment size and all 23 original instructions before the first injection.
+Since version 1.2, the plugin selects the loaded `SceShell` by module NID and
+checks the exact text-segment size before the first injection. Current source
+validates 22 complete patch regions, including the two wider top-level blocks.
 Unknown identities, mismatched sizes, or altered patch sites fail without
 installing any patch. An injection failure rolls back earlier injections.
+
+These 22 patches belong to SceShell. Current source separately validates seven
+SceDbRecovery instruction patches and its allocator hook at module startup; see
+[recovery profile validation](recovery.md). A failed optional recovery installation
+does not roll back the already-validated shell capacity patches.
 
 | Profile | Module NID | Segment 0 size | Reference |
 | --- | --- | --- | --- |
@@ -43,11 +49,17 @@ Consequently, an old log saying "selected FW 3.65 profile" established only
 the API's reported value. It did not establish the identity of the shell.
 Spoofing another version could also reject a supported shell before validation.
 
-## Retail patch locations
+## Retail patch locations in versions 1.2 and 1.3
 
 All offsets are relative to segment 0. Each mapped 3.65 site was checked against
 the corresponding instruction sequence and its containing function in IDA;
 the small integer alone was not used to identify a site.
+
+The historical releases used 23 single-instruction patches. Current source
+replaces the three narrow top-level comparisons below with a 22-byte admission
+block and one 12-byte message block, for 22 regions overall. All other locations
+stay the same. Updated offsets for all three profiles and native verification
+are documented in [top-level capacity](top-level-capacity.md).
 
 | Purpose | Retail 3.60 | Retail 3.65 |
 | --- | --- | --- |

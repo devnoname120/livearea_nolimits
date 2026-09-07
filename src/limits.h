@@ -3,20 +3,28 @@
 
 /*
  * These constants target the supported SceShell implementations. The
- * assembler will reject values that cannot be represented by the original
- * instruction forms.
+ * assembler rejects limits that cannot be encoded by the replacement blocks.
  */
-#define LIVEAREA_PAGE_LIMIT       26
+#define LIVEAREA_PAGE_LIMIT       50
 #define LIVEAREA_ICONS_PER_PAGE   10
-#define LIVEAREA_TOP_LEVEL_LIMIT  255
+#define LIVEAREA_TOP_LEVEL_LIMIT  500
 #define LIVEAREA_ICON_LIMIT       1000
 
-#if LIVEAREA_PAGE_LIMIT > 255
+#if LIVEAREA_PAGE_LIMIT < 1 || LIVEAREA_PAGE_LIMIT > 255
 #error LIVEAREA_PAGE_LIMIT must fit in the original 8-bit Thumb immediates
 #endif
 
-#if LIVEAREA_TOP_LEVEL_LIMIT > 255
-#error LIVEAREA_TOP_LEVEL_LIMIT must fit in the original 8-bit Thumb immediates
+#if LIVEAREA_TOP_LEVEL_LIMIT < 1 || \
+	LIVEAREA_TOP_LEVEL_LIMIT > LIVEAREA_PAGE_LIMIT * LIVEAREA_ICONS_PER_PAGE
+#error LIVEAREA_TOP_LEVEL_LIMIT must fit in the configured pages
+#endif
+
+#if LIVEAREA_TOP_LEVEL_LIMIT > LIVEAREA_ICON_LIMIT || LIVEAREA_ICON_LIMIT > 0x7FFFFFFF
+#error LiveArea limits must preserve the signed counted-icon capacity
+#endif
+
+#if LIVEAREA_ICONS_PER_PAGE != 10
+#error Firmware icon-slot and appearance-table bounds must remain unchanged
 #endif
 
 #endif /* LIVEAREA_NOLIMITS_H */

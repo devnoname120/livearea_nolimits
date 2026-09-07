@@ -4,6 +4,7 @@
 #include <taihen.h>
 
 #include "limits.h"
+#include "recovery.h"
 #ifdef LIVEAREA_ICON_CACHE_TRIAL
 #include "icon_cache_trial.h"
 #endif
@@ -17,8 +18,8 @@ extern const uint8_t patch_cmp_r6_page_limit[2];
 extern const uint8_t patch_cmp_r0_page_limit[2];
 extern const uint8_t patch_movs_r0_page_limit[2];
 extern const uint8_t patch_movs_r2_page_limit[2];
-extern const uint8_t patch_cmp_r6_top_level_limit[2];
-extern const uint8_t patch_cmp_r0_top_level_limit[2];
+extern const uint8_t patch_top_level_admission[22];
+extern const uint8_t patch_top_level_message[12];
 extern const uint8_t patch_cmp_r7_icon_limit[4];
 extern const uint8_t patch_cmp_r0_icon_limit[4];
 extern const uint8_t patch_subs_r6_r5_icon_limit[4];
@@ -29,7 +30,7 @@ extern const uint8_t patch_rsbs_r1_r0_icon_limit[4];
 typedef struct Patch {
 	uint32_t offset;
 	uint8_t size;
-	uint8_t expected[4];
+	uint8_t expected[22];
 	const uint8_t *replacement;
 } Patch;
 
@@ -39,6 +40,13 @@ typedef struct PatchProfile {
 	const Patch *patches;
 	unsigned int patch_count;
 } PatchProfile;
+
+/* These complete windows make room for wide immediates without moving callers. */
+#define TOP_LEVEL_ADMISSION_ORIGINAL { \
+	0x01, 0x22, 0x11, 0x1C, 0x64, 0x2E, 0x00, 0xDB, 0x00, 0x22, \
+	0x00, 0x23, 0x15, 0xB1, 0x00, 0x23, 0x02, 0xB1, 0x0B, 0x1C, 0x23, 0x70 }
+#define TOP_LEVEL_MESSAGE_ORIGINAL { \
+	0x64, 0x28, 0xC4, 0xF2, 0x02, 0x54, 0x10, 0xD0, 0x64, 0x28, 0x07, 0xDD }
 
 /*
  * Offsets are relative to PTEL (testkit) FW 3.60 SceShell segment 0.
@@ -59,9 +67,8 @@ static const Patch patches_ptel_360[] = {
 
 	/* Count all configured pages and allow ten top-level icons per page. */
 	{0x054E70, 2, {0x0A, 0x22}, patch_movs_r2_page_limit},
-	{0x054E8A, 2, {0x64, 0x2E}, patch_cmp_r6_top_level_limit},
-	{0x06364E, 2, {0x64, 0x28}, patch_cmp_r0_top_level_limit},
-	{0x063656, 2, {0x64, 0x28}, patch_cmp_r0_top_level_limit},
+	{0x054E86, 22, TOP_LEVEL_ADMISSION_ORIGINAL, patch_top_level_admission},
+	{0x06364E, 12, TOP_LEVEL_MESSAGE_ORIGINAL, patch_top_level_message},
 
 	/* Raise every confirmed PTEL FW 3.60 counted-icon limit from 500. */
 	{0x026894, 4, {0xB7, 0xF5, 0xFA, 0x7F}, patch_cmp_r7_icon_limit},
@@ -95,9 +102,8 @@ static const Patch patches_360[] = {
 
 	/* Count all configured pages and allow ten top-level icons per page. */
 	{0x0552B0, 2, {0x0A, 0x22}, patch_movs_r2_page_limit},
-	{0x0552CA, 2, {0x64, 0x2E}, patch_cmp_r6_top_level_limit},
-	{0x063A8E, 2, {0x64, 0x28}, patch_cmp_r0_top_level_limit},
-	{0x063A96, 2, {0x64, 0x28}, patch_cmp_r0_top_level_limit},
+	{0x0552C6, 22, TOP_LEVEL_ADMISSION_ORIGINAL, patch_top_level_admission},
+	{0x063A8E, 12, TOP_LEVEL_MESSAGE_ORIGINAL, patch_top_level_message},
 
 	/* Raise every confirmed retail FW 3.60 counted-icon limit from 500. */
 	{0x026728, 4, {0xB7, 0xF5, 0xFA, 0x7F}, patch_cmp_r7_icon_limit},
@@ -127,9 +133,8 @@ static const Patch patches_365[] = {
 
 	/* Count all configured pages and allow ten top-level icons per page. */
 	{0x055308, 2, {0x0A, 0x22}, patch_movs_r2_page_limit},
-	{0x055322, 2, {0x64, 0x2E}, patch_cmp_r6_top_level_limit},
-	{0x063AE6, 2, {0x64, 0x28}, patch_cmp_r0_top_level_limit},
-	{0x063AEE, 2, {0x64, 0x28}, patch_cmp_r0_top_level_limit},
+	{0x05531E, 22, TOP_LEVEL_ADMISSION_ORIGINAL, patch_top_level_admission},
+	{0x063AE6, 12, TOP_LEVEL_MESSAGE_ORIGINAL, patch_top_level_message},
 
 	/* Raise every confirmed retail FW 3.65 counted-icon limit from 500. */
 	{0x026780, 4, {0xB7, 0xF5, 0xFA, 0x7F}, patch_cmp_r7_icon_limit},
@@ -220,7 +225,8 @@ static int verify_patches(const SceKernelSegmentInfo *text_segment,
 	for (index = 0; index < profile->patch_count; ++index) {
 		const Patch *patch = &profile->patches[index];
 
-		if (patch->offset > text_size ||
+		if (patch->size == 0 || patch->size > sizeof(patch->expected) ||
+			patch->offset > text_size ||
 			patch->size > text_size - patch->offset)
 			return -1;
 
@@ -284,6 +290,7 @@ static int install_patches(void)
 	(void)icon_cache_trial_start(tai_info.modid, tai_info.module_nid, &module_info);
 #endif
 
+	(void)recovery_start(tai_info.module_nid);
 	return 0;
 }
 
@@ -312,6 +319,8 @@ int module_stop(SceSize argc, const void *args)
 	(void)argc;
 	(void)args;
 
+	if (recovery_stop() < 0)
+		return SCE_KERNEL_STOP_CANCEL;
 	release_patches();
 	return SCE_KERNEL_STOP_SUCCESS;
 }

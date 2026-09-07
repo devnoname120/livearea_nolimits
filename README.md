@@ -4,10 +4,9 @@
 FW 3.60 and FW 3.65 `SceShell`, with a separate PTEL/testkit 3.60 profile.
 It changes the home-screen limits to:
 
-- 26 pages;
+- 50 pages;
 - 10 top-level icons per page, unchanged from the firmware;
-- 255 top-level icons in total, the maximum supported by the original
-  instruction forms;
+- 500 top-level icons in total;
 - 1,000 counted application/content icons instead of 500.
 
 The plugin validates every original instruction before applying any injection.
@@ -15,12 +14,18 @@ It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Current source builds disable runtime logging by default, including
-when the icon-cache correction is enabled.
+writes. Version 1.4.0 is built in Release mode with runtime logging disabled,
+including when the icon-cache correction is enabled.
 
 Pages after the original first ten use the firmware's default page appearance.
 The plugin intentionally leaves the ten-entry custom theme/layout table bounds
 unchanged so that extra pages cannot read beyond that table.
+
+Version 1.4.0 replaces the previous 255-icon/26-page limits with wider,
+same-size instruction blocks. The count was already 32-bit; no database-format
+change is required. These changes pass offline firmware and native ARM tests,
+but 500 top-level icons on 50 pages have not yet been validated on hardware.
+See [the capacity implementation and validation notes](docs/top-level-capacity.md).
 
 Version 1.2 corrects the firmware profiles in 1.0/1.1: the original reference
 was PTEL 3.60, and the profile previously labeled 3.65 was actually retail 3.60.
@@ -33,9 +38,18 @@ binary. It keeps texture residency bounded with single-victim LRU eviction and
 preserves pending widget requests while evicted artwork reloads. The correction
 validates the relevant SceShell/ScePaf code and data references before installing
 its hooks; if that optional path is unavailable, the baseline page/count patches
-remain active. Retail 3.65 and PTEL 3.60 continue to use only the baseline patches.
+remain active. That release uses only the baseline patches on retail 3.65 and
+PTEL 3.60.
 The implementation and device-validation record are in
 [the icon-cache notes](docs/icon-cache-trial.md).
+
+Version 1.4.0 also extends boot recovery for applications already hidden by the
+old 500-application limit before this plugin was installed. Recovery uses the same
+configured application/page limits as the shell and guards the 500 top-level-icon
+capacity. It retains the native recovery algorithm rather than reinstalling apps,
+rebuilding the database, or hiding the warning. Offline verification and the
+remaining affected-device check are documented in
+[the recovery notes](docs/recovery.md).
 
 ## Build with the VitaSDK image
 
@@ -52,7 +66,10 @@ docker run --rm --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
   -v "$PWD:/work" -w /work \
   livearea-nolimits-vitasdk:ubuntu24.04 \
-  cmake -S . -B build -G Ninja
+  cmake -S . -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLIVEAREA_ICON_CACHE_TRIAL=ON \
+    -DLIVEAREA_ICON_CACHE_LOGGING=OFF
 
 docker run --rm --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
@@ -61,17 +78,20 @@ docker run --rm --platform linux/amd64 \
   cmake --build build
 ```
 
-The result is `build/livearea_nolimits.suprx`.
+The result is `build/livearea_nolimits.suprx`. These options reproduce the release
+configuration: optimized code, the retail 3.60 icon-cache correction, and no
+runtime logging. The project retains its explicit `-O2` optimization level.
 
-Enable the retail 3.60 icon-cache correction with
-`-DLIVEAREA_ICON_CACHE_TRIAL=ON`. Logging is controlled separately by
+The command above enables the retail 3.60 icon-cache correction with
+`-DLIVEAREA_ICON_CACHE_TRIAL=ON`; pass `OFF` for a limits/recovery-only build.
+Logging is controlled separately by
 `LIVEAREA_ICON_CACHE_LOGGING`, which defaults to `OFF`. Logless builds do not
 open, truncate, write or delete the diagnostic file, even on validation or hook
 failure; an existing log from an older build is left untouched.
 
 For diagnostic builds only, also pass `-DLIVEAREA_ICON_CACHE_LOGGING=ON`.
-The already-published v1.3.0 asset has startup diagnostics enabled; this
-source change does not replace that release asset.
+The older v1.3.0 asset has startup diagnostics enabled and remains unchanged;
+the v1.4.0 release asset disables them. See [the changelog](CHANGELOG.md).
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 
@@ -89,6 +109,10 @@ Reboot so the plugin runs before the shell constructs its page container.
 Do not place it under `*NPXS10015`; that title ID belongs to SceSettings.
 
 To upgrade, replace the existing SUPRX at the configured path and reboot.
+For the already-hidden-applications case, use a full reboot rather than standby.
+Do not delete applications or manually rebuild the database as a prerequisite
+for testing the recovery correction. Applications can still remain hidden when
+the configured total or top-level capacity is genuinely exhausted.
 
 This is an FW 3.60/FW 3.65 system-shell patch. Keep a working plugin-recovery
 method before installing it. Holding `L` during boot normally suppresses taiHEN
@@ -96,7 +120,9 @@ plugin loading and allows a bad configuration entry to be removed.
 
 ## Changing the limits
 
-The limits are in `src/limits.h`. Page and top-level limits must fit the
-firmware's existing 8-bit Thumb immediate fields. The total icon limit must be
-encodable by each existing Thumb-2 immediate instruction; the assembler will
-fail rather than silently emitting a different instruction sequence.
+The limits are in `src/limits.h`. Page limits still use 8-bit Thumb immediate
+fields, but the top-level count uses wide Thumb-2 comparisons. The top-level and
+total limits must be encodable by the corresponding Thumb-2 instructions. The
+header rejects a top-level limit that exceeds the configured page capacity or
+counted-icon limit, and ten icons per page remains fixed. The assembler rejects
+oversized instruction blocks; native tests also verify their exact footprints.

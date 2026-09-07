@@ -17,11 +17,15 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
     work = Path(temporary)
     # These tests exercise startup/rollback on the host. Thumb replacement
     # instructions are assembled and inspected separately in the Vita build.
-    declarations = re.findall(r"extern const uint8_t (patch_\w+)\[(\d+)\];",
-                              (root / "src/main.c").read_text())
+    declarations = dict(re.findall(r"extern const uint8_t (patch_\w+)\[(\d+)\];",
+                                   "\n".join((root / name).read_text() for name in
+                                             ("src/main.c", "src/recovery.c"))))
     replacements = work / "replacements.c"
     replacements.write_text("#include <stdint.h>\n" + "\n".join(
-        f"const uint8_t {name}[{size}] = {{0}};" for name, size in declarations))
+        f"const uint8_t {name}[{size}] = {{0}};" for name, size in declarations.items()) +
+        "\nconst char *test_patch_name(const uint8_t *data) {\n" + "\n".join(
+            f'if (data == {name}) return "{name}";' for name in declarations) +
+        '\nreturn "unknown";\n}\n')
     binary = work / "test_startup"
     subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
         "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
@@ -29,6 +33,8 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
         str(root / "tests/test_startup.c"), str(replacements),
         "-o", str(binary)], check=True)
     subprocess.run([str(binary), *sys.argv[1:]], check=True)
+    manifest = work / "shell-patches.json"
+    manifest.write_bytes(subprocess.check_output([str(binary), "--manifest"]))
     integration = work / "test_startup_with_trial"
     subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
         "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
@@ -36,6 +42,18 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
         "-I", str(root / "tests/stubs"), str(root / "tests/test_startup.c"),
         str(replacements), "-o", str(integration)], check=True)
     subprocess.run([str(integration), *sys.argv[1:]], check=True)
+    recovery = work / "test_recovery"
+    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-I", str(root / "tests/stubs"),
+        str(root / "tests/test_recovery.c"), str(replacements),
+        "-o", str(recovery)], check=True)
+    recovery_inputs = []
+    for suffix, nid in (("360", "0x0552F692"), ("365", "0x5549BF1F")):
+        path = os.environ.get(f"LIVEAREA_TEST_RECOVERY_{suffix}")
+        if path:
+            recovery_inputs.extend((nid, path))
+    subprocess.run([str(recovery), *recovery_inputs], check=True)
     paf_text = os.environ.get("LIVEAREA_TEST_PAF_TEXT")
     for logging in (False, True):
         definitions = ["-DLIVEAREA_ICON_CACHE_LOGGING=1"] if logging else []
@@ -79,4 +97,15 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
             str(substitute / "lib/strerror.c"), "-o", str(hook_test)], check=True)
         subprocess.run([str(hook_test), paf_text, offsets["PAF_EVICT_OFFSET"],
                         offsets["PAF_SCAN_OFFSET"], shell_text,
-                        offsets["SHELL_POOL_INIT_OFFSET"], offsets["PAF_APPLY_OFFSET"]], check=True)
+                        offsets["SHELL_POOL_INIT_OFFSET"], offsets["PAF_APPLY_OFFSET"],
+                        *recovery_inputs[1::2]], check=True)
+    plugin_elf = os.environ.get("LIVEAREA_TEST_PLUGIN_ELF")
+    if plugin_elf:
+        arm_python = os.environ.get("LIVEAREA_TEST_ARM_PYTHON", sys.executable)
+        if not sys.argv[1:]:
+            raise SystemExit("Native shell tests require local shell NID/text pairs")
+        subprocess.run([arm_python, str(root / "tests/test_shell_capacity.py"),
+                        plugin_elf, str(manifest), *sys.argv[1:]], check=True)
+        if recovery_inputs:
+            subprocess.run([arm_python, str(root / "tests/test_recovery_firmware.py"),
+                            plugin_elf, *recovery_inputs[1::2]], check=True)
