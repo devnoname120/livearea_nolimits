@@ -15,6 +15,21 @@
 
 uint32_t __stack_chk_guard;
 
+static const struct TestCacheProfile {
+	uint32_t shell_nid, paf_nid;
+	uint32_t text_size, data_size, text_base, data_base;
+	uint32_t pool_slot, init_offset;
+	uint32_t paf_text_base, paf_data_base;
+} test_profiles[] = {
+	{0x0552F692, 0xCD679177, 0x541B74, 0x93FAC, 0x81000000, 0x81542000,
+		0x6DEC, 0x2C74, 0x81000000, 0x81301000},
+	{0x5549BF1F, 0x73F90499, 0x5420F4, 0x93FBC, 0x81000000, 0x81543000,
+		0x6DFC, 0x2CCC, 0x81000000, 0x81301000},
+	{0xEAB89D5C, 0xCD679177, 0x535CF4, 0x92D1C, 0x83200DC0, 0x83780FB0,
+		0x6BBC, 0x2C74, 0x83200E90, 0x811607E0},
+};
+static const struct TestCacheProfile *test_profile = &test_profiles[0];
+
 static uint8_t *g_paf_text;
 static uint8_t *g_paf_data;
 static SceSize g_paf_data_size = PAF_MUTEX_OFFSET + 32;
@@ -119,7 +134,7 @@ SceUID taiHookFunctionOffset(tai_hook_ref_t *ref, SceUID modid, int segment,
 {
 	assert(segment == 0 && thumb == 1);
 	if (modid == 42) {
-		assert(offset == SHELL_POOL_INIT_OFFSET && hook == initialize_icon_pool);
+		assert(offset == test_profile->init_offset && hook == initialize_icon_pool);
 		*ref = 124;
 		return g_init_hook_failure ? -1 : 457;
 	}
@@ -294,14 +309,36 @@ static void rejected(uint32_t shell_nid, const SceKernelModuleInfo *shell)
 	assert(g_pool_init_hook == -1);
 	assert(g_apply_hook == -1 && !g_image_handle_vtable && !g_get_surface);
 	assert(!g_icon_pool_slot && !g_release_surface && !g_stock_evict);
+	assert(!g_profile);
 	check_log("failed: 0x");
 }
 
 int main(int argc, char **argv)
 {
+	if (argc == 2 && strcmp(argv[1], "--profiles") == 0) {
+		putchar('[');
+		for (size_t i = 0; i < sizeof(cache_profiles) / sizeof(cache_profiles[0]); ++i)
+			printf("%s%u", i ? "," : "", cache_profiles[i].shell_nid);
+		puts("]");
+		return 0;
+	}
+	int arg = 1;
+	if (arg < argc && strncmp(argv[arg], "0x", 2) == 0) {
+		uint32_t nid = (uint32_t)strtoul(argv[arg++], NULL, 0);
+		unsigned int index;
+		for (index = 0; index < sizeof(test_profiles) / sizeof(test_profiles[0]); ++index)
+			if (test_profiles[index].shell_nid == nid)
+				break;
+		assert(index < sizeof(test_profiles) / sizeof(test_profiles[0]));
+		test_profile = &test_profiles[index];
+	}
+	const char *paf_path = arg < argc ? argv[arg++] : NULL;
+	const char *shell_path = arg < argc ? argv[arg++] : NULL;
+	assert(arg == argc);
+	g_paf_nid = test_profile->paf_nid;
 	SceKernelModuleInfo shell = {0};
-	uint8_t *shell_data = calloc(1, ICON_POOL_SLOT + 64);
-	uint8_t *shell_text = calloc(1, SHELL_POOL_INIT_OFFSET + 16);
+	uint8_t *shell_data = calloc(1, test_profile->data_size + sizeof(void *));
+	uint8_t *shell_text = calloc(1, test_profile->text_size);
 	IconPool pool = {0};
 	PafCache cache = {0};
 	PafSurface surface = {0};
@@ -310,15 +347,18 @@ int main(int argc, char **argv)
 	void *selected = NULL;
 	size_t i;
 	int releases;
-	assert(argc <= 2 && shell_data && shell_text);
+	assert(shell_data && shell_text);
 	g_paf_text = calloc(1, PAF_TEXT_SIZE);
 	g_paf_data = calloc(1, g_paf_data_size);
 	assert(g_paf_text && g_paf_data);
-	if (argc == 2) {
-		FILE *file = fopen(argv[1], "rb");
+	if (paf_path) {
+		FILE *file = fopen(paf_path, "rb");
 		assert(file && fread(g_paf_text, 1, PAF_TEXT_SIZE, file) == PAF_TEXT_SIZE);
 		assert(fgetc(file) == EOF);
 		fclose(file);
+		uint32_t input_nid;
+		memcpy(&input_nid, g_paf_text + 0x262AF8 + 52, sizeof(input_nid));
+		assert(input_nid == test_profile->paf_nid);
 	} else {
 		memcpy(g_paf_text + PAF_SCAN_OFFSET, expected_scan_entry, sizeof(expected_scan_entry));
 		memcpy(g_paf_text + PAF_EVICT_OFFSET, expected_evict, sizeof(expected_evict));
@@ -340,7 +380,20 @@ int main(int argc, char **argv)
 	uint8_t *mutex_load = g_paf_text + PAF_MUTEX_LOAD_OFFSET;
 	uint8_t *clock_load = g_paf_text + PAF_CLOCK_LOAD_OFFSET;
 	/* Only absolute-address immediates differ in the host's emulated relocation. */
-	if (argc == 2) {
+	if (paf_path) {
+		assert(matches_mov_address(mutex_load, mutex_load + 6, 5,
+			test_profile->paf_data_base + PAF_MUTEX_OFFSET));
+		assert(matches_mov_address(clock_load, clock_load + 4, 1,
+			test_profile->paf_data_base + PAF_CLOCK_OFFSET));
+		const uint8_t *get = g_paf_text + PAF_GET_SURFACE_OFFSET;
+		const uint8_t *thunk = g_paf_text + PAF_HANDLE_GET_OFFSET;
+		assert(matches_mov_address(get + 2, get + 6, 6,
+			test_profile->paf_data_base + PAF_MUTEX_OFFSET));
+		assert(matches_mov_address(thunk + 4, thunk + 8, 12,
+			test_profile->paf_text_base + PAF_GET_SURFACE_OFFSET + 1));
+		uint32_t getter;
+		memcpy(&getter, g_paf_text + PAF_HANDLE_VTABLE_OFFSET + 8, sizeof(getter));
+		assert(getter == test_profile->paf_text_base + PAF_HANDLE_GET_OFFSET + 1);
 		assert(((mutex_load[0] | mutex_load[1] << 8) & 0xFBF0U) == 0xF240U);
 		assert(((mutex_load[2] | mutex_load[3] << 8) & 0x8F00U) == 0x0500U);
 		assert(((mutex_load[6] | mutex_load[7] << 8) & 0xFBF0U) == 0xF2C0U);
@@ -374,7 +427,7 @@ int main(int argc, char **argv)
 		uint8_t *code = g_paf_text + consumer_relocations[i].offset;
 		unsigned int reg = consumer_relocations[i].reg;
 		uint32_t address = consumer_relocations[i].address;
-		if (argc == 2) {
+		if (paf_path) {
 			assert(((code[0] | code[1] << 8) & 0xFBF0U) == 0xF240U);
 			assert(((code[2] | code[3] << 8) & 0x8F00U) == reg << 8);
 			assert(((code[4] | code[5] << 8) & 0xFBF0U) == 0xF2C0U);
@@ -395,14 +448,28 @@ int main(int argc, char **argv)
 	relocate_mov_half(guard_load + 4, 0xF2C0U, 4, (uint16_t)(guard_address >> 16));
 	/* Keep the emulated pointer slot aligned on both 32- and 64-bit hosts. */
 	shell.segments[1].vaddr = shell_data +
-		((sizeof(void *) - ICON_POOL_SLOT % sizeof(void *)) % sizeof(void *));
-	shell.segments[1].memsz = ICON_POOL_SLOT + 32;
+		((sizeof(void *) - test_profile->pool_slot % sizeof(void *)) % sizeof(void *));
+	shell.segments[1].memsz = test_profile->data_size;
 	shell.segments[0].vaddr = shell_text;
-	shell.segments[0].memsz = SHELL_POOL_INIT_OFFSET + 16;
-	uint8_t *init_entry = shell_text + SHELL_POOL_INIT_OFFSET;
+	shell.segments[0].memsz = test_profile->text_size;
+	uint8_t *init_entry = shell_text + test_profile->init_offset;
 	const uint8_t entry[] = {0x2D,0xE9,0xF0,0x41,0x8A,0xB0,0x47,0xF2,0xCC,0x58};
 	const uint8_t checked_bits[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xF0,0xFB,0,0x8F};
-	memcpy(init_entry, entry, sizeof(entry));
+	if (shell_path) {
+		FILE *file = fopen(shell_path, "rb");
+		assert(file && fread(shell_text, 1, test_profile->text_size, file) == test_profile->text_size);
+		assert(fgetc(file) == EOF);
+		fclose(file);
+		assert(matches_mov_address(init_entry + 0x1E, init_entry + 0x22, 0,
+			test_profile->data_base + test_profile->pool_slot));
+	} else {
+		memcpy(init_entry, entry, sizeof(entry));
+		init_entry[0x26] = 0x06;
+		init_entry[0x27] = 0x60;
+	}
+	uint32_t pool_address = (uint32_t)(uintptr_t)shell.segments[1].vaddr + test_profile->pool_slot;
+	relocate_mov_half(init_entry + 0x1E, 0xF240U, 0, (uint16_t)pool_address);
+	relocate_mov_half(init_entry + 0x22, 0xF2C0U, 0, (uint16_t)(pool_address >> 16));
 	for (i = 0; i < sizeof(entry); ++i) {
 		for (unsigned int bit = 0; bit < 8; ++bit) {
 			init_entry[i] ^= 1U << bit;
@@ -413,12 +480,12 @@ int main(int argc, char **argv)
 	pool.surface_pool = &pool;
 	g_initialized_pool = &pool;
 	cache.surface_pool = &pool;
-	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = &pool;
+	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = &pool;
 
 	g_query_error = 1;
-	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = NULL;
+	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = NULL;
 	int queries = g_paf_queries;
-	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
+	assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) == 0);
 	assert(g_pool_init_hook == 457 && g_scan_hook < 0 && g_paf_queries == queries);
 	check_log("waiting for icon pool");
 	g_query_error = 0;
@@ -433,8 +500,8 @@ int main(int argc, char **argv)
 	g_hook_calls = 0;
 	g_hook_releases = 0;
 	g_query_error = 1;
-	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = NULL;
-	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
+	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = NULL;
+	assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) == 0);
 	initialize_icon_pool();
 	assert(g_scan_hook < 0 && g_pool_init_hook == 457);
 	assert(g_log_open == LIVEAREA_ICON_CACHE_LOGGING);
@@ -445,38 +512,68 @@ int main(int argc, char **argv)
 	assert(g_paf_queries == queries);
 	icon_cache_trial_stop();
 	g_query_error = 0;
-	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = NULL;
+	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = NULL;
 	init_entry[0] ^= 1;
-	rejected(RETAIL_360_SHELL_NID, &shell);
+	rejected(test_profile->shell_nid, &shell);
 	init_entry[0] ^= 1;
 	g_init_hook_failure = 1;
-	rejected(RETAIL_360_SHELL_NID, &shell);
+	rejected(test_profile->shell_nid, &shell);
 	check_log("shell initializer hook failed");
 	g_init_hook_failure = 0;
-	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + ICON_POOL_SLOT) = &pool;
+	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = &pool;
 
-	rejected(0x5549BF1F, &shell);
-	check_log("shell identity failed: 0x5549BF1F");
-	rejected(RETAIL_360_SHELL_NID, NULL);
+	for (i = 0; i < sizeof(test_profiles) / sizeof(test_profiles[0]); ++i) {
+		if (test_profiles[i].shell_nid != test_profile->shell_nid)
+			rejected(test_profiles[i].shell_nid, &shell);
+		if (test_profiles[i].paf_nid != test_profile->paf_nid) {
+			g_paf_nid = test_profiles[i].paf_nid;
+			rejected(test_profile->shell_nid, &shell);
+			g_paf_nid = test_profile->paf_nid;
+		}
+	}
+	for (int ready = 0; ready <= 1; ++ready) {
+		*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = ready ? &pool : NULL;
+		for (i = 0x1E; i < 0x28; ++i) {
+			for (unsigned int bit = 0; bit < 8; ++bit) {
+				init_entry[i] ^= 1U << bit;
+				rejected(test_profile->shell_nid, &shell);
+				init_entry[i] ^= 1U << bit;
+			}
+		}
+	}
+	--shell.segments[0].memsz;
+	rejected(test_profile->shell_nid, &shell);
+	shell.segments[0].memsz += 2;
+	rejected(test_profile->shell_nid, &shell);
+	--shell.segments[0].memsz;
+	shell.segments[0].vaddr = NULL;
+	rejected(test_profile->shell_nid, &shell);
+	shell.segments[0].vaddr = shell_text;
+	++shell.segments[1].memsz;
+	rejected(test_profile->shell_nid, &shell);
+	--shell.segments[1].memsz;
+	rejected(0x03650000, &shell);
+	check_log("shell identity failed: 0x03650000");
+	rejected(test_profile->shell_nid, NULL);
 	check_log("shell pool slot");
-	shell.segments[1].memsz = ICON_POOL_SLOT + sizeof(IconPool *) - 1;
-	rejected(RETAIL_360_SHELL_NID, &shell);
-	shell.segments[1].memsz = ICON_POOL_SLOT + 32;
+	shell.segments[1].memsz = test_profile->pool_slot + sizeof(IconPool *) - 1;
+	rejected(test_profile->shell_nid, &shell);
+	shell.segments[1].memsz = test_profile->data_size;
 	g_paf_nid ^= 1;
-	rejected(RETAIL_360_SHELL_NID, &shell);
+	rejected(test_profile->shell_nid, &shell);
 	g_paf_nid ^= 1;
 	--g_paf_size;
-	rejected(RETAIL_360_SHELL_NID, &shell);
+	rejected(test_profile->shell_nid, &shell);
 	++g_paf_size;
 	g_paf_data_size = PAF_MUTEX_OFFSET + 31;
-	rejected(RETAIL_360_SHELL_NID, &shell);
+	rejected(test_profile->shell_nid, &shell);
 	++g_paf_data_size;
 	for (g_query_error = 1; g_query_error <= 2; ++g_query_error)
-		rejected(RETAIL_360_SHELL_NID, &shell);
+		rejected(test_profile->shell_nid, &shell);
 	g_query_error = 0;
 	for (i = 0; i < sizeof(expected_scan_entry); ++i) {
 		g_paf_text[PAF_SCAN_OFFSET + i] ^= 1;
-		rejected(RETAIL_360_SHELL_NID, &shell);
+		rejected(test_profile->shell_nid, &shell);
 		check_log("PAF scan bytes failed: 0x00015E6A");
 		g_paf_text[PAF_SCAN_OFFSET + i] ^= 1;
 	}
@@ -485,7 +582,7 @@ int main(int argc, char **argv)
 			? g_paf_text + PAF_EVICT_OFFSET + i
 			: g_paf_text + PAF_RELEASE_OFFSET + i - sizeof(expected_evict);
 		*byte ^= 1;
-		rejected(RETAIL_360_SHELL_NID, &shell);
+		rejected(test_profile->shell_nid, &shell);
 		*byte ^= 1;
 	}
 	for (i = 0; i < sizeof(expected_mutex_functions) + sizeof(expected_timestamp_getter); ++i) {
@@ -493,7 +590,7 @@ int main(int argc, char **argv)
 			? g_paf_text + PAF_LOCK_OFFSET + i
 			: g_paf_text + PAF_TIMESTAMP_GET_OFFSET + i - sizeof(expected_mutex_functions);
 		*byte ^= 1;
-		rejected(RETAIL_360_SHELL_NID, &shell);
+		rejected(test_profile->shell_nid, &shell);
 		*byte ^= 1;
 	}
 	for (i = 0; i < 16; ++i) {
@@ -501,7 +598,7 @@ int main(int argc, char **argv)
 			? mutex_load + i + 2 : clock_load + i - 8;
 		for (unsigned int bit = 0; bit < 8; ++bit) {
 			*byte ^= 1U << bit;
-			rejected(RETAIL_360_SHELL_NID, &shell);
+			rejected(test_profile->shell_nid, &shell);
 			check_log("PAF cache data references");
 			*byte ^= 1U << bit;
 		}
@@ -515,7 +612,7 @@ int main(int argc, char **argv)
 			uint8_t *byte = g_paf_text + consumer_regions[i].offset + j;
 			for (unsigned int bit = 0; bit < 8; ++bit) {
 				*byte ^= 1U << bit;
-				rejected(RETAIL_360_SHELL_NID, &shell);
+				rejected(test_profile->shell_nid, &shell);
 				check_log("PAF consumer bytes");
 				check_log("icon-cache PAF text=0x");
 				check_log("icon-cache bytes +0015F9E2:");
@@ -527,18 +624,18 @@ int main(int argc, char **argv)
 		}
 	}
 	g_consumer_hook_failure = 1;
-	rejected(RETAIL_360_SHELL_NID, &shell);
+	rejected(test_profile->shell_nid, &shell);
 	check_log("consumer hook failed");
 	g_consumer_hook_failure = 0;
 	int consumer_releases = g_consumer_hook_releases;
 	g_hook_failure = 1;
-	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) < 0);
+	assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) < 0);
 	assert(!g_icon_pool_slot && !g_release_surface && !g_log_open && !g_stock_evict);
 	check_log("scan hook failed: 0xFFFFFFFF");
 	assert(g_hook_releases == 0);
 	assert(g_apply_hook < 0 && g_consumer_hook_releases == consumer_releases + 1);
 	g_hook_failure = 0;
-	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
+	assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) == 0);
 	check_log("active (LRU + consumer reload)");
 	assert(!strstr(g_log_contents, "icon-cache bytes"));
 	assert(g_apply_hook == 458 && g_image_handle_vtable == g_paf_text + PAF_HANDLE_VTABLE_OFFSET);
@@ -690,8 +787,9 @@ int main(int argc, char **argv)
 	assert(!g_stock_evict && !g_release_surface);
 	assert(!g_cache_mutex && !g_cache_clock && !g_lock_cache && !g_unlock_cache);
 	assert(g_apply_hook < 0 && !g_get_surface && !g_image_handle_vtable);
+	assert(!g_profile);
 	g_log_failure = 1;
-	assert(icon_cache_trial_start(42, RETAIL_360_SHELL_NID, &shell) == 0);
+	assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) == 0);
 	assert(!g_log_open);
 	icon_cache_trial_stop();
 	assert(g_hook_releases == 2);
@@ -703,5 +801,6 @@ int main(int argc, char **argv)
 		? "Logging enabled: startup and failure diagnostics verified"
 		: "Logging disabled: no file operations or diagnostic formatting on any tested path");
 	puts("Icon cache trial: deferred startup, LRU ordering/ties/wrap, one victim, protected surfaces, reloadability, nested locking, metadata, no hot-path I/O, validation and cleanup passed");
+	printf("Cache profile passed: shell 0x%08X / PAF 0x%08X\n", test_profile->shell_nid, test_profile->paf_nid);
 	return 0;
 }

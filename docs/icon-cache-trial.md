@@ -1,4 +1,9 @@
-# Retail 3.60 icon-cache trial
+# Retail 3.60 icon-cache implementation history
+
+This file preserves the original retail 3.60 investigation and device trials.
+As of v1.5.0, the same correction is enabled by default for retail 3.60, retail
+3.65, and PTEL 3.60 using validated profiles. Current compatibility, tests, and
+hardware-coverage limits are documented in [cache profiles](cache-profiles.md).
 
 **The LRU device comparison improved scrolling but did not fix revisited white icons.**
 The user no longer noticed the short freezes and saw all artwork while scrolling
@@ -13,7 +18,8 @@ checks completed at 11:38:14 CEST. Navigation with the consumer correction still
 needs the user's comparison; successful activation is not a visual correctness
 result. The installed SHA-256 is
 `9cdbeca2ad349b83a7f9e9dbb96c721fe9af51ef8cb24568a7a4f0dd90199297`.
-The optional build remains disabled by default; the 2 MiB pool is not enlarged.
+At that trial stage the optional build was disabled by default; the 2 MiB pool
+was not enlarged.
 
 ## First-trial failure and recovery
 

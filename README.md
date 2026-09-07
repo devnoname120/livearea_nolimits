@@ -14,8 +14,23 @@ It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Version 1.4.0 is built in Release mode with runtime logging disabled,
+writes. Version 1.5.0 is built in Release mode with runtime logging disabled,
 including when the icon-cache correction is enabled.
+
+Version 1.5.0 provides the same features on every supported firmware profile:
+
+| Feature | Retail 3.60 | Retail 3.65 | PTEL 3.60 |
+| --- | --- | --- | --- |
+| 500 top-level icons / 50 pages | Yes | Yes | Yes |
+| 1,000 counted application/content icons | Yes | Yes | Yes |
+| Hidden-application recovery extension | Yes | Yes | Yes |
+| LRU icon-cache eviction and artwork reload | Yes | Yes | Yes |
+
+All runtime patches remain conditional on successful module and code validation.
+The new cache profiles were verified against the corresponding firmware binaries
+and regression tests, not on retail 3.65 or PTEL hardware. See
+[cache profile validation](docs/cache-profiles.md) for identities, offsets, and
+the distinction between implemented feature parity and hardware coverage.
 
 Pages after the original first ten use the firmware's default page appearance.
 The plugin intentionally leaves the ten-entry custom theme/layout table bounds
@@ -79,11 +94,12 @@ docker run --rm --platform linux/amd64 \
 ```
 
 The result is `build/livearea_nolimits.suprx`. These options reproduce the release
-configuration: optimized code, the retail 3.60 icon-cache correction, and no
+configuration: optimized code, the multi-firmware icon-cache correction, and no
 runtime logging. The project retains its explicit `-O2` optimization level.
 
-The command above enables the retail 3.60 icon-cache correction with
-`-DLIVEAREA_ICON_CACHE_TRIAL=ON`; pass `OFF` for a limits/recovery-only build.
+The icon-cache correction defaults to `ON` in fresh configurations. The historical
+option name `LIVEAREA_ICON_CACHE_TRIAL` is retained for build compatibility; pass
+`-DLIVEAREA_ICON_CACHE_TRIAL=OFF` for an explicit limits/recovery-only build.
 Logging is controlled separately by
 `LIVEAREA_ICON_CACHE_LOGGING`, which defaults to `OFF`. Logless builds do not
 open, truncate, write or delete the diagnostic file, even on validation or hook
@@ -91,7 +107,7 @@ failure; an existing log from an older build is left untouched.
 
 For diagnostic builds only, also pass `-DLIVEAREA_ICON_CACHE_LOGGING=ON`.
 The older v1.3.0 asset has startup diagnostics enabled and remains unchanged;
-the v1.4.0 release asset disables them. See [the changelog](CHANGELOG.md).
+the v1.4.0 and v1.5.0 release assets disable them. See [the changelog](CHANGELOG.md).
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 

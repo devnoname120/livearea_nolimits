@@ -35,7 +35,21 @@ extern uint32_t __stack_chk_guard;
 #define PAF_MUTEX_LOAD_OFFSET (0x83216D0EU - 0x83200E90U)
 #define PAF_CLOCK_LOAD_OFFSET (0x83216D86U - 0x83200E90U)
 
-/* Partial layouts verified against the 3.60 PAF providers and shell callers. */
+typedef struct {
+	uint32_t shell_nid, paf_nid;
+	uint32_t text_size, data_size;
+	uint32_t pool_slot, init_offset;
+} CacheProfile;
+
+/* Matching PAF code/layout does not imply matching shell globals or imports. */
+static const CacheProfile cache_profiles[] = {
+	{RETAIL_360_SHELL_NID, PAF_360_NID, 0x541B74, 0x93FAC, ICON_POOL_SLOT, SHELL_POOL_INIT_OFFSET},
+	{0x5549BF1FU, 0x73F90499U, 0x5420F4, 0x93FBC, 0x6DFC, 0x2CCC},
+	{0xEAB89D5CU, PAF_360_NID, 0x535CF4, 0x92D1C, 0x6BBC, 0x2C74},
+};
+static const CacheProfile *g_profile;
+
+/* Partial layouts verified against all three supported shell/PAF pairs. */
 typedef struct {
 	uint8_t reserved[24];
 	int32_t references;
@@ -367,6 +381,7 @@ void icon_cache_trial_stop(void)
 	g_selection = NULL;
 	g_image_handle_vtable = NULL;
 	g_get_surface = NULL;
+	g_profile = NULL;
 #if LIVEAREA_ICON_CACHE_LOGGING
 	if (g_log_fd >= 0) {
 		sceIoClose(g_log_fd);
@@ -444,7 +459,7 @@ static int install_paf_hook(void)
 	result = taiGetModuleInfo("ScePaf", &paf);
 	if (result < 0)
 		return trial_failure("PAF lookup", (uint32_t)result);
-	if (paf.module_nid != PAF_360_NID)
+	if (!g_profile || paf.module_nid != g_profile->paf_nid)
 		return trial_failure("PAF identity", paf.module_nid);
 	info.size = sizeof(info);
 	result = sceKernelGetModuleInfo(paf.modid, &info);
@@ -542,38 +557,54 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 	const SceKernelModuleInfo *shell_info)
 {
 	int result = -1;
+	const uint8_t *entry;
+	static const uint8_t pool_store[] = {0x06, 0x60};
 
 	g_install_attempted = 0;
+	g_profile = NULL;
+	for (size_t i = 0; i < sizeof(cache_profiles) / sizeof(cache_profiles[0]); ++i) {
+		if (cache_profiles[i].shell_nid == shell_nid) {
+			g_profile = &cache_profiles[i];
+			break;
+		}
+	}
 #if LIVEAREA_ICON_CACHE_LOGGING
 	g_log_fd = sceIoOpen("ur0:/data/livearea_nolimits-icon-cache-trial.log",
 		SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
 #endif
-	if (shell_nid != RETAIL_360_SHELL_NID) {
+	if (!g_profile) {
 		trial_failure("shell identity", shell_nid);
 		goto fail;
 	}
 	if (!shell_info || !shell_info->segments[1].vaddr ||
-		shell_info->segments[1].memsz < ICON_POOL_SLOT + sizeof(IconPool *)) {
-		trial_failure("shell pool slot", ICON_POOL_SLOT);
+		shell_info->segments[1].memsz != g_profile->data_size) {
+		trial_failure("shell pool slot", g_profile->pool_slot);
+		goto fail;
+	}
+	if (!shell_info->segments[0].vaddr ||
+		shell_info->segments[0].memsz != g_profile->text_size) {
+		trial_failure("shell text segment", g_profile->text_size);
+		goto fail;
+	}
+	entry = (const uint8_t *)shell_info->segments[0].vaddr + g_profile->init_offset;
+	/* Check the relocated pool reference even when the pool already exists. */
+	if (!valid_pool_init_entry(entry) ||
+		!matches_mov_address(entry + 0x1E, entry + 0x22, 0,
+			(uint32_t)(uintptr_t)shell_info->segments[1].vaddr + g_profile->pool_slot) ||
+		!matches(entry + 0x26, pool_store, sizeof(pool_store))) {
+		trial_failure("shell initializer bytes", g_profile->init_offset);
 		goto fail;
 	}
 	g_icon_pool_slot = (IconPool *volatile *)
-		((uintptr_t)shell_info->segments[1].vaddr + ICON_POOL_SLOT);
+		((uintptr_t)shell_info->segments[1].vaddr + g_profile->pool_slot);
 	if (*g_icon_pool_slot && (*g_icon_pool_slot)->surface_pool) {
 		result = install_paf_hook();
 		if (result < 0)
 			goto fail;
 		return 0;
 	}
-	if (!shell_info->segments[0].vaddr ||
-		shell_info->segments[0].memsz < SHELL_POOL_INIT_OFFSET + 10 ||
-		!valid_pool_init_entry((const uint8_t *)shell_info->segments[0].vaddr +
-			SHELL_POOL_INIT_OFFSET)) {
-		trial_failure("shell initializer bytes", SHELL_POOL_INIT_OFFSET);
-		goto fail;
-	}
 	g_pool_init_hook = taiHookFunctionOffset(&g_pool_init_ref, shell_modid, 0,
-		SHELL_POOL_INIT_OFFSET, 1, initialize_icon_pool);
+		g_profile->init_offset, 1, initialize_icon_pool);
 	if (g_pool_init_hook < 0) {
 		trial_failure("shell initializer hook", (uint32_t)g_pool_init_hook);
 		goto fail;

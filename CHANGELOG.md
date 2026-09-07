@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.5.0 - 2026-09-07
+
+### Fixed
+
+- Enable the complete icon-cache correction on retail 3.65 and PTEL 3.60, not
+  only retail 3.60. Every supported profile now includes LRU surface eviction,
+  pending artwork reload handling, and pinned native consumer handoff.
+- Select the matching shell initializer, pool-pointer slot, and PAF module
+  identity. Validate the relocated pool reference before using it, including
+  when the pool is already initialized. Unknown or mismatched modules are
+  still rejected without installing cache hooks.
+
+### Changed
+
+- Enable the cache correction by default for fresh source builds. Keep the
+  existing build option for explicitly requesting a limits/recovery-only build.
+- Keep Release mode, logging disabled, 500 top-level icons, 50 pages, 10 icons
+  per page, and the separate 1,000 counted-application limit.
+
+### Validation scope
+
+The cache startup/LRU regression suite now runs for all three shell/PAF pairs,
+with logging both disabled and enabled. Actual retail 3.60, retail 3.65, and PTEL
+PAF and shell bytes pass profile validation and taiHEN prologue-relocation tests.
+Cross-profile identities, segment sizes, corrupted code, relocated pointers,
+partial hook installation, and cleanup are covered. The shared consumer-reload,
+capacity, and recovery suites remain enabled. Retail 3.65/PTEL runtime behaviour
+and a populated 500-icon library still require hardware validation; implemented
+feature parity is not a claim of identical hardware-test coverage.
+
 ## 1.4.0 - 2026-09-07
 
 ### Added

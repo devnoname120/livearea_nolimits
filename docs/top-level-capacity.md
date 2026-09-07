@@ -121,8 +121,9 @@ restarting. Also test recovery of applications hidden before plugin activation.
 
 Integer encoding is no longer the known obstacle. UI scheduling, metadata growth
 and texture-cache behaviour at this scale remain hardware-validation risks.
-The cache correction currently targets retail 3.60; byte validation of the other
-shell profiles does not establish equivalent large-library rendering stability.
+Version 1.5.0 supplies the cache correction for every supported shell profile;
+see [cache profiles](cache-profiles.md). Firmware-byte and host validation do not
+establish equivalent large-library rendering stability on untested hardware.
 A separate byte value 255 inspected in the earlier `sub_835713F8` candidate is
 used while walking a bounded tag/length byte buffer, not the LSDB icon count;
 that code has not been patched. This is not an exhaustive claim about every

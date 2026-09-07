@@ -10,11 +10,11 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(livearea_nolimits VERSION 1.4.0 LANGUAGES C ASM)
+project(livearea_nolimits VERSION 1.5.0 LANGUAGES C ASM)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 option(LIVEAREA_ICON_CACHE_TRIAL
-	"Enable the retail 3.60 icon texture eviction trial" OFF)
+	"Enable icon-cache eviction and reload correction on supported firmware" ON)
 option(LIVEAREA_ICON_CACHE_LOGGING
 	"Enable icon-cache startup diagnostics" OFF)
 

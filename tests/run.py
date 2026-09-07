@@ -5,6 +5,7 @@ Example: python3 tests/run.py 0x5549BF1F /path/to/SceShell.text.bin
 Firmware images are local inputs and are not distributed with the tests.
 """
 from pathlib import Path
+import json
 import os
 import re
 import shlex
@@ -55,6 +56,16 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
             recovery_inputs.extend((nid, path))
     subprocess.run([str(recovery), *recovery_inputs], check=True)
     paf_text = os.environ.get("LIVEAREA_TEST_PAF_TEXT")
+    cache_inputs = []
+    for nid, variable, init_offset in (
+        (0x0552F692, "LIVEAREA_TEST_PAF_TEXT", "0x2C74"),
+        (0x5549BF1F, "LIVEAREA_TEST_PAF_365_TEXT", "0x2CCC"),
+        (0xEAB89D5C, "LIVEAREA_TEST_PAF_PTEL_TEXT", "0x2C74"),
+    ):
+        paf = os.environ.get(variable)
+        shell = next((sys.argv[i + 1] for i in range(1, len(sys.argv), 2)
+                      if int(sys.argv[i], 0) == nid), None)
+        cache_inputs.append((nid, paf, shell, init_offset))
     for logging in (False, True):
         definitions = ["-DLIVEAREA_ICON_CACHE_LOGGING=1"] if logging else []
         for name, arguments in (
@@ -67,11 +78,25 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
                 "-fsanitize=address,undefined", *definitions,
                 "-I", str(root / "tests/stubs"),
                 str(root / "tests" / f"{name}.c"), "-o", str(binary)], check=True)
-            subprocess.run([str(binary), *arguments], check=True)
+            if name == "test_icon_cache_trial":
+                profiles = json.loads(subprocess.check_output([str(binary), "--profiles"]))
+                shell_profiles = {profile["nid"] for profile in json.loads(manifest.read_text())["profiles"]}
+                assert len(profiles) == len(set(profiles))
+                assert set(profiles) == shell_profiles, "Every supported shell must have a cache profile"
+                assert {nid for nid, _, _, _ in cache_inputs} == shell_profiles
+                for nid, paf, shell, _ in cache_inputs:
+                    inputs = [hex(nid)]
+                    if paf:
+                        inputs.append(paf)
+                        if shell:
+                            inputs.append(shell)
+                    subprocess.run([str(binary), *inputs], check=True)
+            else:
+                subprocess.run([str(binary), *arguments], check=True)
     substitute_path = os.environ.get("LIVEAREA_TEST_SUBSTITUTE")
     if substitute_path:
-        if not paf_text:
-            raise SystemExit("LIVEAREA_TEST_SUBSTITUTE requires LIVEAREA_TEST_PAF_TEXT")
+        if not any(paf and shell for _, paf, shell, _ in cache_inputs):
+            raise SystemExit("LIVEAREA_TEST_SUBSTITUTE requires a matching PAF and shell text pair")
         substitute = Path(substitute_path).resolve()
         revision = subprocess.run(
             ["git", "-C", str(substitute), "rev-parse", "HEAD"],
@@ -83,10 +108,6 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
         offsets = dict(re.findall(
             r"#define\s+((?:PAF|SHELL)_\w+_OFFSET)\s+(0x[0-9A-Fa-f]+)U",
             (root / "src/icon_cache_trial.c").read_text()))
-        shell_text = next((sys.argv[i + 1] for i in range(1, len(sys.argv), 2)
-                           if int(sys.argv[i], 0) == 0x0552F692), None)
-        if not shell_text:
-            raise SystemExit("Relocator checks require the retail 3.60 shell text argument")
         hook_test = work / "test_hook_transform"
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=gnu11", "-DFORCE_TARGET_arm",
@@ -95,10 +116,12 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
             str(substitute / "lib/jump-dis.c"),
             str(substitute / "lib/cbit/vec.c"),
             str(substitute / "lib/strerror.c"), "-o", str(hook_test)], check=True)
-        subprocess.run([str(hook_test), paf_text, offsets["PAF_EVICT_OFFSET"],
-                        offsets["PAF_SCAN_OFFSET"], shell_text,
-                        offsets["SHELL_POOL_INIT_OFFSET"], offsets["PAF_APPLY_OFFSET"],
-                        *recovery_inputs[1::2]], check=True)
+        for nid, paf, shell, init_offset in cache_inputs:
+            if paf and shell:
+                print(f"Cache relocator profile: 0x{nid:08X}", flush=True)
+                subprocess.run([str(hook_test), paf, offsets["PAF_EVICT_OFFSET"],
+                                offsets["PAF_SCAN_OFFSET"], shell, init_offset,
+                                offsets["PAF_APPLY_OFFSET"], *recovery_inputs[1::2]], check=True)
     plugin_elf = os.environ.get("LIVEAREA_TEST_PLUGIN_ELF")
     if plugin_elf:
         arm_python = os.environ.get("LIVEAREA_TEST_ARM_PYTHON", sys.executable)
