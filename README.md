@@ -27,6 +27,15 @@ The retail 3.65 profile is now mapped against an identified 3.65 update image.
 See [firmware validation](docs/firmware-validation.md) for the binary identities
 and verification details.
 
+Version 1.3 adds the retail 3.60 icon-cache correction used by the GitHub release
+binary. It keeps texture residency bounded with single-victim LRU eviction and
+preserves pending widget requests while evicted artwork reloads. The correction
+validates the relevant SceShell/ScePaf code and data references before installing
+its hooks; if that optional path is unavailable, the baseline page/count patches
+remain active. Retail 3.65 and PTEL 3.60 continue to use only the baseline patches.
+The implementation and device-validation record are in
+[the icon-cache notes](docs/icon-cache-trial.md).
+
 ## Build with the VitaSDK image
 
 The current `gnuton/vitasdk-docker:latest` SDK image is based on Ubuntu 22.04
@@ -52,6 +61,10 @@ docker run --rm --platform linux/amd64 \
 ```
 
 The result is `build/livearea_nolimits.suprx`.
+
+The v1.3 GitHub release binary enables the retail 3.60 icon-cache correction. To
+reproduce that configuration from source, configure with
+`-DLIVEAREA_ICON_CACHE_TRIAL=ON`.
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 

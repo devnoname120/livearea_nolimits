@@ -4,6 +4,9 @@
 #include <taihen.h>
 
 #include "limits.h"
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+#include "icon_cache_trial.h"
+#endif
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define SCE_SHELL_TEXT_SEGMENT 0
@@ -190,6 +193,10 @@ static void release_patches(void)
 {
 	int index;
 
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	icon_cache_trial_stop();
+#endif
+
 	for (index = (int)ARRAY_SIZE(patch_uids) - 1; index >= 0; --index) {
 		if (patch_uids[index] >= 0) {
 			taiInjectRelease(patch_uids[index]);
@@ -269,6 +276,13 @@ static int install_patches(void)
 			return result;
 		}
 	}
+
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	/* Saved layouts can depend on these limit patches. The optional trial
+	 * logs failures and cleans up its own hook; never drop the working
+	 * page/count patches just because the experimental hook is unavailable. */
+	(void)icon_cache_trial_start(tai_info.modid, tai_info.module_nid, &module_info);
+#endif
 
 	return 0;
 }

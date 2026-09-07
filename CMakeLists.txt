@@ -13,10 +13,19 @@ endif()
 project(livearea_nolimits C ASM)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
+option(LIVEAREA_ICON_CACHE_TRIAL
+	"Enable the retail 3.60 icon texture eviction trial" OFF)
+
 add_executable(livearea_nolimits
 	src/main.c
 	src/patch_bytes.S
 )
+
+if(LIVEAREA_ICON_CACHE_TRIAL)
+	target_sources(livearea_nolimits PRIVATE src/icon_cache_trial.c)
+	target_compile_definitions(livearea_nolimits PRIVATE LIVEAREA_ICON_CACHE_TRIAL=1)
+	target_link_libraries(livearea_nolimits SceIofilemgr_stub)
+endif()
 
 target_compile_options(livearea_nolimits PRIVATE
 	-Wall
@@ -34,12 +43,17 @@ target_include_directories(livearea_nolimits PRIVATE
 target_link_libraries(livearea_nolimits
 	taihen_stub
 	SceKernelModulemgr_stub
+	# System imports must precede newlib's application-runtime definitions.
+	SceLibKernel_stub
 	c
+	# Newlib's selected wrappers also depend on system imports.
 	SceLibKernel_stub
 	gcc
 )
 
 set_target_properties(livearea_nolimits PROPERTIES
+	C_STANDARD 11
+	C_STANDARD_REQUIRED YES
 	LINK_FLAGS "-nostdlib -Wl,-q"
 )
 

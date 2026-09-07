@@ -14,6 +14,32 @@ static int g_fail_injection;
 static unsigned int g_injection_calls;
 static unsigned int g_live_injections;
 static unsigned int g_release_calls;
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+static int g_trial_failure;
+static int g_trial_live;
+static unsigned int g_trial_calls;
+
+int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
+	const SceKernelModuleInfo *info)
+{
+	assert(shell_modid == 42);
+	assert(shell_nid == g_module_nid && info->segments[0].vaddr == g_text);
+	assert(g_live_injections == 23);
+	++g_trial_calls;
+	if (g_trial_failure)
+		return -1;
+	g_trial_live = 1;
+	return 0;
+}
+
+void icon_cache_trial_stop(void)
+{
+	/* Remove the PAF hook before rolling back the shell patches. */
+	if (g_trial_live)
+		assert(g_live_injections == 23);
+	g_trial_live = 0;
+}
+#endif
 static struct {
 	uint32_t offset;
 	SceSize size;
@@ -71,6 +97,11 @@ int taiInjectRelease(SceUID uid)
 static void reset_attempt(const PatchProfile *profile)
 {
 	assert(g_live_injections == 0);
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	assert(!g_trial_live);
+	g_trial_failure = 0;
+	g_trial_calls = 0;
+#endif
 	g_module_nid = profile->module_nid;
 	g_text_size = profile->text_size;
 	g_info_error = 0;
@@ -97,6 +128,9 @@ static void test_profile(const PatchProfile *profile)
 	reset_attempt(profile);
 	assert(module_start(0, NULL) == SCE_KERNEL_START_SUCCESS);
 	assert(g_injection_calls == 23 && g_live_injections == 23);
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	assert(g_trial_calls == 1 && g_trial_live);
+#endif
 	for (index = 0; index < profile->patch_count; ++index) {
 		const Patch *patch = &profile->patches[index];
 		assert(memcmp(g_text + patch->offset, patch->replacement, patch->size) == 0);
@@ -106,6 +140,17 @@ static void test_profile(const PatchProfile *profile)
 	assert(memcmp(g_text, original, profile->text_size) == 0);
 	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);
 	assert(g_release_calls == 23);
+
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	reset_attempt(profile);
+	g_trial_failure = 1;
+	assert(module_start(0, NULL) == SCE_KERNEL_START_SUCCESS);
+	assert(g_trial_calls == 1 && !g_trial_live);
+	assert(g_live_injections == 23 && g_release_calls == 0);
+	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);
+	assert(g_live_injections == 0 && g_release_calls == 23);
+	assert(memcmp(g_text, original, profile->text_size) == 0);
+#endif
 
 	/* Every original byte is checked before the first write. */
 	for (index = 0; index < profile->patch_count; ++index) {
