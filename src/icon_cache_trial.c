@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <taihen.h>
 
+#include "debug_log.h"
+
 /* PAF and this plugin import the same loader-resolved SceLibKernel variable. */
 extern uint32_t __stack_chk_guard;
 
@@ -170,6 +172,10 @@ typedef struct {
 	PafImage *victim;
 	uint32_t now;
 	uint32_t oldest_age;
+#if LIVEAREA_DEBUG_LOGGING
+	unsigned int scanned;
+	unsigned int eligible;
+#endif
 } IconSelection;
 
 static SceUID g_scan_hook = -1;
@@ -189,6 +195,24 @@ static int (*g_unlock_cache)(void *mutex);
 static void *g_cache_mutex;
 static const uint32_t *g_cache_clock;
 static IconSelection *g_selection;
+#if LIVEAREA_DEBUG_LOGGING
+static volatile unsigned int g_debug_scan_calls;
+static volatile unsigned int g_debug_apply_calls;
+static volatile unsigned int g_debug_evictions;
+static volatile unsigned int g_debug_pending;
+static volatile unsigned int g_debug_scan_errors;
+static volatile unsigned int g_debug_apply_errors;
+
+static int trace_hot_call(unsigned int call)
+{
+	return call <= 32 || (call & 127U) == 0;
+}
+
+static int trace_occurrence(unsigned int occurrence)
+{
+	return occurrence <= 16 || (occurrence & 31U) == 0;
+}
+#endif
 #if LIVEAREA_ICON_CACHE_LOGGING
 static SceUID g_log_fd = -1;
 
@@ -223,9 +247,16 @@ static int select_icon_surface(void *item)
 {
 	PafImage *image = item;
 	IconSelection *selection = g_selection;
+#if LIVEAREA_DEBUG_LOGGING
+	if (selection)
+		++selection->scanned;
+#endif
 	if (image && selection && image->cache == selection->cache &&
 		can_evict_icon_surface(image)) {
 		uint32_t age = selection->now - image->last_used;
+#if LIVEAREA_DEBUG_LOGGING
+		++selection->eligible;
+#endif
 		if (!selection->victim || age > selection->oldest_age) {
 			selection->victim = image;
 			selection->oldest_age = age;
@@ -241,18 +272,45 @@ static int scan_icon_surfaces(void *cache, int (*predicate)(void *),
 	IconSelection selection = {0};
 	IconSelection *previous;
 	int result;
-	if (!g_stock_evict || predicate != g_stock_evict || !cache)
-		return TAI_CONTINUE(int, g_scan_ref, cache, predicate, out_item);
+#if LIVEAREA_DEBUG_LOGGING
+	unsigned int call = __sync_add_and_fetch(&g_debug_scan_calls, 1);
+	int trace = trace_hot_call(call);
+	unsigned int occurrence = 0;
+	if (trace)
+		debug_logf("cache", "scan-enter call=%u cache=0x%08X predicate=0x%08X out=0x%08X",
+			call, (unsigned int)(uintptr_t)cache, (unsigned int)(uintptr_t)predicate,
+			(unsigned int)(uintptr_t)out_item);
+#endif
+	if (!g_stock_evict || predicate != g_stock_evict || !cache) {
+		result = TAI_CONTINUE(int, g_scan_ref, cache, predicate, out_item);
+#if LIVEAREA_DEBUG_LOGGING
+		if (trace || result < 0)
+			debug_logf("cache", "scan-delegate call=%u result=%d stock=0x%08X",
+				call, result, (unsigned int)(uintptr_t)g_stock_evict);
+#endif
+		return result;
+	}
 	/* The getter and allocator use this same recursive mutex. Keep selection alive
 	 * through release, including the interval after the firmware scan unlocks. */
 	if (g_lock_cache(g_cache_mutex) < 0) {
 		if (out_item)
 			*out_item = NULL;
+#if LIVEAREA_DEBUG_LOGGING
+		debug_logf("cache", "scan-lock-failed call=%u mutex=0x%08X",
+			call, (unsigned int)(uintptr_t)g_cache_mutex);
+		__sync_add_and_fetch(&g_debug_scan_errors, 1);
+#endif
 		return 0;
 	}
 	if (!is_icon_cache(cache)) {
 		g_unlock_cache(g_cache_mutex);
-		return TAI_CONTINUE(int, g_scan_ref, cache, predicate, out_item);
+		result = TAI_CONTINUE(int, g_scan_ref, cache, predicate, out_item);
+#if LIVEAREA_DEBUG_LOGGING
+		if (trace || result < 0)
+			debug_logf("cache", "scan-non-icon-cache call=%u result=%d",
+				call, result);
+#endif
+		return result;
 	}
 	selection.cache = cache;
 	selection.now = *g_cache_clock;
@@ -274,19 +332,53 @@ static int scan_icon_surfaces(void *cache, int (*predicate)(void *),
 		result = 0;
 	}
 	g_unlock_cache(g_cache_mutex);
+#if LIVEAREA_DEBUG_LOGGING
+	if (result == 1)
+		occurrence = __sync_add_and_fetch(&g_debug_evictions, 1);
+	else if (result < 0)
+		occurrence = __sync_add_and_fetch(&g_debug_scan_errors, 1);
+	if (trace || (occurrence && trace_occurrence(occurrence)))
+		debug_logf("cache", "scan-exit call=%u result=%d scanned=%u eligible=%u victim=0x%08X age=%u out_item=0x%08X evictions=%u scan_errors=%u",
+			call, result, selection.scanned, selection.eligible,
+			(unsigned int)(uintptr_t)selection.victim, selection.oldest_age,
+			(unsigned int)(uintptr_t)(out_item ? *out_item : NULL),
+			(unsigned int)g_debug_evictions, (unsigned int)g_debug_scan_errors);
+#endif
 	return result;
 }
 
 static int apply_icon_image(void *widget, void **handle, int object, int texture)
 {
 	PafSurface *held_surface = NULL;
+	PafImage *image = NULL;
 	int pending = 0;
+#if LIVEAREA_DEBUG_LOGGING
+	unsigned int call = __sync_add_and_fetch(&g_debug_apply_calls, 1);
+	int trace = trace_hot_call(call);
+	int kind = -1;
+	int load_state = -1;
+	int image_result = 0;
+	int references = 0;
+	int registered = 0;
+	int retries_left = 0;
+	int retry_limit = 0;
+	void *surface = NULL;
+	unsigned int pending_occurrence = 0;
+	if (trace)
+		debug_logf("cache", "apply-enter call=%u widget=0x%08X handle_ptr=0x%08X handle=0x%08X object=%d texture=%d",
+			call, (unsigned int)(uintptr_t)widget, (unsigned int)(uintptr_t)handle,
+			(unsigned int)(uintptr_t)(handle ? *handle : NULL), object, texture);
+#endif
 	if (widget && handle && *handle && g_image_handle_vtable &&
 		((PafImageHandle *)*handle)->vtable == g_image_handle_vtable) {
 		/* Other image interfaces need not be embedded in a PAF cache item. */
-		PafImage *image = (PafImage *)((uint8_t *)*handle - offsetof(PafImage, handle));
-		if (g_lock_cache(g_cache_mutex) < 0)
+		image = (PafImage *)((uint8_t *)*handle - offsetof(PafImage, handle));
+		if (g_lock_cache(g_cache_mutex) < 0) {
+			debug_logf("cache", "apply-lock-failed call=%u image=0x%08X mutex=0x%08X",
+				call, (unsigned int)(uintptr_t)image,
+				(unsigned int)(uintptr_t)g_cache_mutex);
 			return -1;
+		}
 		if (image->kind == 1 && is_icon_cache(image->cache) &&
 			image->registered && image->result == 0 &&
 			(image->surface || image->load_state == 1 ||
@@ -295,15 +387,50 @@ static int apply_icon_image(void *widget, void **handle, int object, int texture
 			/* Stale success must not finish a widget request for an absent texture. */
 			pending = !held_surface;
 		}
+#if LIVEAREA_DEBUG_LOGGING
+		kind = image->kind;
+		load_state = image->load_state;
+		image_result = image->result;
+		references = image->references;
+		registered = image->registered;
+		retries_left = image->retries_left;
+		retry_limit = image->retry_limit;
+		surface = image->surface;
+#endif
 		g_unlock_cache(g_cache_mutex);
 	}
+#if LIVEAREA_DEBUG_LOGGING
 	if (pending)
+		pending_occurrence = __sync_add_and_fetch(&g_debug_pending, 1);
+	if (trace || (pending_occurrence && trace_occurrence(pending_occurrence)))
+		debug_logf("cache", "apply-state call=%u image=0x%08X kind=%d load=%d result=%d refs=%d registered=%d retries=%d/%d surface=0x%08X held=0x%08X pending=%d",
+			call, (unsigned int)(uintptr_t)image, kind, load_state, image_result,
+			references, registered, retries_left, retry_limit,
+			(unsigned int)(uintptr_t)surface, (unsigned int)(uintptr_t)held_surface,
+			pending);
+#endif
+	if (pending) {
+#if LIVEAREA_DEBUG_LOGGING
+		if (trace || trace_occurrence(pending_occurrence))
+			debug_logf("cache", "apply-exit call=%u result=-1 reason=pending pending_total=%u",
+				call, pending_occurrence);
+#endif
 		return -1;
+	}
 	/* Pin artwork across the native getter, without holding the cache mutex over
 	 * widget callbacks. Otherwise an intervening eviction recreates the same race. */
 	int result = TAI_CONTINUE(int, g_apply_ref, widget, handle, object, texture);
 	if (held_surface)
 		g_release_surface(held_surface);
+#if LIVEAREA_DEBUG_LOGGING
+	unsigned int error_occurrence = 0;
+	if (result != 0)
+		error_occurrence = __sync_add_and_fetch(&g_debug_apply_errors, 1);
+	if (trace || (error_occurrence && trace_occurrence(error_occurrence)))
+		debug_logf("cache", "apply-exit call=%u result=%d held=0x%08X released=%u apply_errors=%u",
+			call, result, (unsigned int)(uintptr_t)held_surface,
+			held_surface ? 1U : 0U, (unsigned int)g_debug_apply_errors);
+#endif
 	return result;
 }
 
@@ -358,16 +485,23 @@ static int valid_consumer_code(const uint8_t *text, uint32_t data_address)
 
 void icon_cache_trial_stop(void)
 {
+	int result = 0;
+
+	debug_logf("cache", "stop begin scan_uid=%d apply_uid=%d init_uid=%d",
+		g_scan_hook, g_apply_hook, g_pool_init_hook);
 	if (g_scan_hook >= 0) {
-		taiHookRelease(g_scan_hook, g_scan_ref);
+		result = taiHookRelease(g_scan_hook, g_scan_ref);
+		debug_logf("cache", "scan-hook-release uid=%d result=%d", g_scan_hook, result);
 		g_scan_hook = -1;
 	}
 	if (g_apply_hook >= 0) {
-		taiHookRelease(g_apply_hook, g_apply_ref);
+		result = taiHookRelease(g_apply_hook, g_apply_ref);
+		debug_logf("cache", "apply-hook-release uid=%d result=%d", g_apply_hook, result);
 		g_apply_hook = -1;
 	}
 	if (g_pool_init_hook >= 0) {
-		taiHookRelease(g_pool_init_hook, g_pool_init_ref);
+		result = taiHookRelease(g_pool_init_hook, g_pool_init_ref);
+		debug_logf("cache", "pool-hook-release uid=%d result=%d", g_pool_init_hook, result);
 		g_pool_init_hook = -1;
 	}
 	g_install_attempted = 0;
@@ -382,16 +516,26 @@ void icon_cache_trial_stop(void)
 	g_image_handle_vtable = NULL;
 	g_get_surface = NULL;
 	g_profile = NULL;
+	(void)result;
+#if LIVEAREA_DEBUG_LOGGING
+	debug_logf("cache", "totals scan_calls=%u apply_calls=%u evictions=%u pending=%u scan_errors=%u apply_errors=%u",
+		(unsigned int)g_debug_scan_calls, (unsigned int)g_debug_apply_calls,
+		(unsigned int)g_debug_evictions, (unsigned int)g_debug_pending,
+		(unsigned int)g_debug_scan_errors, (unsigned int)g_debug_apply_errors);
+#endif
 #if LIVEAREA_ICON_CACHE_LOGGING
 	if (g_log_fd >= 0) {
 		sceIoClose(g_log_fd);
 		g_log_fd = -1;
 	}
 #endif
+	debug_logf("cache", "stop complete");
 }
 
 static int trial_failure(const char *stage, uint32_t detail)
 {
+	debug_logf("cache", "failure stage=%s detail=0x%08X",
+		stage ? stage : "unknown", (unsigned int)detail);
 #if LIVEAREA_ICON_CACHE_LOGGING
 	char message[96];
 	/* This plugin does not initialize newlib's application runtime. */
@@ -455,45 +599,114 @@ static int install_paf_hook(void)
 	const char *hook_stage = "consumer hook";
 
 	g_install_attempted = 1;
+	debug_logf("cache", "paf-install begin profile=0x%08X expected_paf=0x%08X",
+		g_profile ? (unsigned int)g_profile->shell_nid : 0U,
+		g_profile ? (unsigned int)g_profile->paf_nid : 0U);
 	paf.size = sizeof(paf);
 	result = taiGetModuleInfo("ScePaf", &paf);
+	debug_logf("cache", "paf-lookup result=%d modid=%d nid=0x%08X",
+		result, result < 0 ? -1 : paf.modid,
+		result < 0 ? 0U : (unsigned int)paf.module_nid);
 	if (result < 0)
 		return trial_failure("PAF lookup", (uint32_t)result);
-	if (!g_profile || paf.module_nid != g_profile->paf_nid)
+	if (!g_profile || paf.module_nid != g_profile->paf_nid) {
+		debug_logf("cache", "paf-identity-mismatch actual=0x%08X expected=0x%08X",
+			(unsigned int)paf.module_nid,
+			g_profile ? (unsigned int)g_profile->paf_nid : 0U);
 		return trial_failure("PAF identity", paf.module_nid);
+	}
 	info.size = sizeof(info);
 	result = sceKernelGetModuleInfo(paf.modid, &info);
+	debug_logf("cache", "paf-module-info result=%d text=0x%08X text_size=0x%08X data=0x%08X data_size=0x%08X",
+		result,
+		result < 0 ? 0U : (unsigned int)(uintptr_t)info.segments[0].vaddr,
+		result < 0 ? 0U : (unsigned int)info.segments[0].memsz,
+		result < 0 ? 0U : (unsigned int)(uintptr_t)info.segments[1].vaddr,
+		result < 0 ? 0U : (unsigned int)info.segments[1].memsz);
 	if (result < 0)
 		return trial_failure("PAF module info", (uint32_t)result);
-	if (!info.segments[0].vaddr || info.segments[0].memsz != PAF_TEXT_SIZE)
+	if (!info.segments[0].vaddr || info.segments[0].memsz != PAF_TEXT_SIZE) {
+		debug_logf("cache", "paf-text-mismatch actual=0x%08X expected=0x%08X",
+			(unsigned int)info.segments[0].memsz, PAF_TEXT_SIZE);
 		return trial_failure("PAF segment", info.segments[0].memsz);
-	if (!info.segments[1].vaddr || info.segments[1].memsz < PAF_MUTEX_OFFSET + 32)
+	}
+	if (!info.segments[1].vaddr || info.segments[1].memsz < PAF_MUTEX_OFFSET + 32) {
+		debug_logf("cache", "paf-data-mismatch actual=0x%08X minimum=0x%08X",
+			(unsigned int)info.segments[1].memsz, PAF_MUTEX_OFFSET + 32);
 		return trial_failure("PAF data segment", info.segments[1].memsz);
+	}
 	text = info.segments[0].vaddr;
-	if (!matches(text + PAF_SCAN_OFFSET, expected_scan_entry, sizeof(expected_scan_entry)))
+	if (!matches(text + PAF_SCAN_OFFSET, expected_scan_entry, sizeof(expected_scan_entry))) {
+		debug_log_hex("cache", "paf-scan-actual", PAF_SCAN_OFFSET,
+			text + PAF_SCAN_OFFSET, sizeof(expected_scan_entry));
+		debug_log_hex("cache", "paf-scan-expected", PAF_SCAN_OFFSET,
+			expected_scan_entry, sizeof(expected_scan_entry));
 		return trial_failure("PAF scan bytes", PAF_SCAN_OFFSET);
-	if (!matches(text + PAF_EVICT_OFFSET, expected_evict, sizeof(expected_evict)))
+	}
+	debug_logf("cache", "paf-scan-verified offset=0x%08X", PAF_SCAN_OFFSET);
+	if (!matches(text + PAF_EVICT_OFFSET, expected_evict, sizeof(expected_evict))) {
+		debug_log_hex("cache", "paf-predicate-actual", PAF_EVICT_OFFSET,
+			text + PAF_EVICT_OFFSET, sizeof(expected_evict));
 		return trial_failure("PAF predicate bytes", PAF_EVICT_OFFSET);
-	if (!matches(text + PAF_RELEASE_OFFSET, expected_release, sizeof(expected_release)))
+	}
+	debug_logf("cache", "paf-predicate-verified offset=0x%08X", PAF_EVICT_OFFSET);
+	if (!matches(text + PAF_RELEASE_OFFSET, expected_release, sizeof(expected_release))) {
+		debug_log_hex("cache", "paf-release-actual", PAF_RELEASE_OFFSET,
+			text + PAF_RELEASE_OFFSET, sizeof(expected_release));
 		return trial_failure("PAF release bytes", PAF_RELEASE_OFFSET);
-	if (!matches(text + PAF_LOCK_OFFSET, expected_mutex_functions, sizeof(expected_mutex_functions)))
+	}
+	debug_logf("cache", "paf-release-verified offset=0x%08X", PAF_RELEASE_OFFSET);
+	if (!matches(text + PAF_LOCK_OFFSET, expected_mutex_functions, sizeof(expected_mutex_functions))) {
+		debug_log_hex("cache", "paf-mutex-actual", PAF_LOCK_OFFSET,
+			text + PAF_LOCK_OFFSET, sizeof(expected_mutex_functions));
 		return trial_failure("PAF mutex bytes", PAF_LOCK_OFFSET);
+	}
+	debug_logf("cache", "paf-mutex-verified lock=0x%08X unlock=0x%08X",
+		PAF_LOCK_OFFSET, PAF_UNLOCK_OFFSET);
 	if (!matches(text + PAF_TIMESTAMP_GET_OFFSET, expected_timestamp_getter,
-		sizeof(expected_timestamp_getter)))
+		sizeof(expected_timestamp_getter))) {
+		debug_log_hex("cache", "paf-clock-getter-actual", PAF_TIMESTAMP_GET_OFFSET,
+			text + PAF_TIMESTAMP_GET_OFFSET, sizeof(expected_timestamp_getter));
 		return trial_failure("PAF timestamp bytes", PAF_TIMESTAMP_GET_OFFSET);
+	}
+	debug_logf("cache", "paf-clock-getter-verified offset=0x%08X",
+		PAF_TIMESTAMP_GET_OFFSET);
 	/* Reject a data-layout mismatch before locking or reading an unrelated object. */
 	uint32_t data_address = (uint32_t)(uintptr_t)info.segments[1].vaddr;
 	if (!matches_mov_address(text + PAF_MUTEX_LOAD_OFFSET,
-		text + PAF_MUTEX_LOAD_OFFSET + 6, 5, data_address + PAF_MUTEX_OFFSET) ||
+			text + PAF_MUTEX_LOAD_OFFSET + 6, 5, data_address + PAF_MUTEX_OFFSET) ||
 		!matches_mov_address(text + PAF_CLOCK_LOAD_OFFSET,
-		text + PAF_CLOCK_LOAD_OFFSET + 4, 1, data_address + PAF_CLOCK_OFFSET))
+			text + PAF_CLOCK_LOAD_OFFSET + 4, 1, data_address + PAF_CLOCK_OFFSET)) {
+		debug_logf("cache", "paf-data-reference-mismatch data=0x%08X mutex=0x%08X clock=0x%08X",
+			data_address, data_address + PAF_MUTEX_OFFSET,
+			data_address + PAF_CLOCK_OFFSET);
+		debug_log_hex("cache", "paf-mutex-load", PAF_MUTEX_LOAD_OFFSET,
+			text + PAF_MUTEX_LOAD_OFFSET, 10);
+		debug_log_hex("cache", "paf-clock-load", PAF_CLOCK_LOAD_OFFSET,
+			text + PAF_CLOCK_LOAD_OFFSET, 8);
 		return trial_failure("PAF cache data references", PAF_MUTEX_OFFSET);
+	}
+	debug_logf("cache", "paf-data-references-verified mutex=0x%08X clock=0x%08X",
+		data_address + PAF_MUTEX_OFFSET, data_address + PAF_CLOCK_OFFSET);
 	if (!valid_consumer_code(text, data_address)) {
+		debug_logf("cache", "paf-consumer-validation-failed guard=0x%08X",
+			(unsigned int)(uintptr_t)&__stack_chk_guard);
+		debug_log_hex("cache", "paf-consumer-apply", PAF_APPLY_OFFSET,
+			text + PAF_APPLY_OFFSET, 30);
+		debug_log_hex("cache", "paf-get-surface", PAF_GET_SURFACE_OFFSET,
+			text + PAF_GET_SURFACE_OFFSET, sizeof(expected_get_surface));
+		debug_log_hex("cache", "paf-handle-thunk", PAF_HANDLE_GET_OFFSET,
+			text + PAF_HANDLE_GET_OFFSET, 14);
+		debug_log_hex("cache", "paf-vtable-slot", PAF_HANDLE_VTABLE_OFFSET + 8,
+			text + PAF_HANDLE_VTABLE_OFFSET + 8, 4);
 #if LIVEAREA_ICON_CACHE_LOGGING
 		trial_log_consumer_code(text, data_address);
 #endif
 		return trial_failure("PAF consumer bytes", PAF_APPLY_OFFSET);
 	}
+	debug_logf("cache", "paf-consumer-verified apply=0x%08X getter=0x%08X thunk=0x%08X vtable=0x%08X",
+		PAF_APPLY_OFFSET, PAF_GET_SURFACE_OFFSET, PAF_HANDLE_GET_OFFSET,
+		PAF_HANDLE_VTABLE_OFFSET);
 	g_release_surface = (void *)((uintptr_t)text + PAF_RELEASE_OFFSET + 1);
 	g_stock_evict = (void *)((uintptr_t)text + PAF_EVICT_OFFSET + 1);
 	g_lock_cache = (void *)((uintptr_t)text + PAF_LOCK_OFFSET + 1);
@@ -502,22 +715,38 @@ static int install_paf_hook(void)
 	g_cache_clock = (const uint32_t *)((uint8_t *)info.segments[1].vaddr + PAF_CLOCK_OFFSET);
 	g_image_handle_vtable = text + PAF_HANDLE_VTABLE_OFFSET;
 	g_get_surface = (void *)((uintptr_t)text + PAF_GET_SURFACE_OFFSET + 1);
+	debug_logf("cache", "paf-addresses stock_evict=0x%08X release=0x%08X lock=0x%08X unlock=0x%08X mutex=0x%08X clock=0x%08X",
+		(unsigned int)(uintptr_t)g_stock_evict,
+		(unsigned int)(uintptr_t)g_release_surface,
+		(unsigned int)(uintptr_t)g_lock_cache,
+		(unsigned int)(uintptr_t)g_unlock_cache,
+		(unsigned int)(uintptr_t)g_cache_mutex,
+		(unsigned int)(uintptr_t)g_cache_clock);
 	/* Do not enable additional evictions without the matching consumer fix. */
 	g_apply_hook = taiHookFunctionOffset(&g_apply_ref, paf.modid, 0,
 		PAF_APPLY_OFFSET, 1, apply_icon_image);
+	debug_logf("cache", "apply-hook result=%d offset=0x%08X",
+		g_apply_hook, PAF_APPLY_OFFSET);
 	if (g_apply_hook < 0) {
 		result = g_apply_hook;
 		goto hook_failed;
 	}
 	g_scan_hook = taiHookFunctionOffset(&g_scan_ref, paf.modid, 0,
 		PAF_SCAN_OFFSET, 1, scan_icon_surfaces);
+	debug_logf("cache", "scan-hook result=%d offset=0x%08X",
+		g_scan_hook, PAF_SCAN_OFFSET);
 	if (g_scan_hook < 0) {
 		hook_stage = "scan hook";
 		result = g_scan_hook;
-		taiHookRelease(g_apply_hook, g_apply_ref);
+		int release_result = taiHookRelease(g_apply_hook, g_apply_ref);
+		debug_logf("cache", "apply-hook rollback uid=%d result=%d",
+			g_apply_hook, release_result);
+		(void)release_result;
 		g_apply_hook = -1;
 		goto hook_failed;
 	}
+	debug_logf("cache", "hooks-active paf_modid=%d apply_uid=%d scan_uid=%d",
+		paf.modid, g_apply_hook, g_scan_hook);
 #if LIVEAREA_ICON_CACHE_LOGGING
 	static const char active[] = "icon-cache trial active (LRU + consumer reload)\n";
 	trial_log(active, sizeof(active) - 1);
@@ -525,6 +754,8 @@ static int install_paf_hook(void)
 	return 0;
 
 hook_failed:
+	debug_logf("cache", "hook-install-failed stage=%s result=%d",
+		hook_stage, result);
 	g_stock_evict = NULL;
 	g_release_surface = NULL;
 	g_lock_cache = NULL;
@@ -538,10 +769,23 @@ hook_failed:
 
 static void initialize_icon_pool(void)
 {
+	int result = 0;
+
+	debug_logf("cache", "pool-initializer-enter attempted=%d slot=0x%08X",
+		g_install_attempted, (unsigned int)(uintptr_t)g_icon_pool_slot);
 	TAI_CONTINUE(void, g_pool_init_ref);
+	debug_logf("cache", "pool-initializer-original-complete pool=0x%08X surface_pool=0x%08X",
+		(unsigned int)(uintptr_t)(g_icon_pool_slot ? *g_icon_pool_slot : NULL),
+		(unsigned int)(uintptr_t)(g_icon_pool_slot && *g_icon_pool_slot
+			? (*g_icon_pool_slot)->surface_pool : NULL));
 	/* PAF is unavailable at plugin startup; this initializer calls its providers. */
-	if (!g_install_attempted)
-		(void)install_paf_hook();
+	if (!g_install_attempted) {
+		result = install_paf_hook();
+		debug_logf("cache", "pool-initializer-install result=%d", result);
+	} else {
+		debug_logf("cache", "pool-initializer-install skipped attempted=1");
+	}
+	(void)result;
 }
 
 static int valid_pool_init_entry(const uint8_t *entry)
@@ -562,9 +806,26 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 
 	g_install_attempted = 0;
 	g_profile = NULL;
+#if LIVEAREA_DEBUG_LOGGING
+	g_debug_scan_calls = 0;
+	g_debug_apply_calls = 0;
+	g_debug_evictions = 0;
+	g_debug_pending = 0;
+	g_debug_scan_errors = 0;
+	g_debug_apply_errors = 0;
+#endif
+	debug_logf("cache", "start shell_modid=%d shell_nid=0x%08X shell_info=0x%08X",
+		shell_modid, (unsigned int)shell_nid, (unsigned int)(uintptr_t)shell_info);
 	for (size_t i = 0; i < sizeof(cache_profiles) / sizeof(cache_profiles[0]); ++i) {
 		if (cache_profiles[i].shell_nid == shell_nid) {
 			g_profile = &cache_profiles[i];
+			debug_logf("cache", "profile-selected index=%u shell_nid=0x%08X paf_nid=0x%08X shell_text=0x%08X shell_data=0x%08X pool_slot=0x%08X init=0x%08X",
+				(unsigned int)i, (unsigned int)g_profile->shell_nid,
+				(unsigned int)g_profile->paf_nid,
+				(unsigned int)g_profile->text_size,
+				(unsigned int)g_profile->data_size,
+				(unsigned int)g_profile->pool_slot,
+				(unsigned int)g_profile->init_offset);
 			break;
 		}
 	}
@@ -573,16 +834,29 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 		SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
 #endif
 	if (!g_profile) {
+		debug_logf("cache", "profile-missing shell_nid=0x%08X",
+			(unsigned int)shell_nid);
 		trial_failure("shell identity", shell_nid);
 		goto fail;
 	}
+	debug_logf("cache", "shell-segments text=0x%08X text_size=0x%08X data=0x%08X data_size=0x%08X",
+		shell_info ? (unsigned int)(uintptr_t)shell_info->segments[0].vaddr : 0U,
+		shell_info ? (unsigned int)shell_info->segments[0].memsz : 0U,
+		shell_info ? (unsigned int)(uintptr_t)shell_info->segments[1].vaddr : 0U,
+		shell_info ? (unsigned int)shell_info->segments[1].memsz : 0U);
 	if (!shell_info || !shell_info->segments[1].vaddr ||
 		shell_info->segments[1].memsz != g_profile->data_size) {
+		debug_logf("cache", "shell-data-mismatch actual=0x%08X expected=0x%08X",
+			shell_info ? (unsigned int)shell_info->segments[1].memsz : 0U,
+			(unsigned int)g_profile->data_size);
 		trial_failure("shell pool slot", g_profile->pool_slot);
 		goto fail;
 	}
 	if (!shell_info->segments[0].vaddr ||
 		shell_info->segments[0].memsz != g_profile->text_size) {
+		debug_logf("cache", "shell-text-mismatch actual=0x%08X expected=0x%08X",
+			(unsigned int)shell_info->segments[0].memsz,
+			(unsigned int)g_profile->text_size);
 		trial_failure("shell text segment", g_profile->text_size);
 		goto fail;
 	}
@@ -592,23 +866,40 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 		!matches_mov_address(entry + 0x1E, entry + 0x22, 0,
 			(uint32_t)(uintptr_t)shell_info->segments[1].vaddr + g_profile->pool_slot) ||
 		!matches(entry + 0x26, pool_store, sizeof(pool_store))) {
+		debug_logf("cache", "shell-initializer-mismatch offset=0x%08X expected_pool=0x%08X",
+			(unsigned int)g_profile->init_offset,
+			(unsigned int)(uintptr_t)shell_info->segments[1].vaddr + g_profile->pool_slot);
+		debug_log_hex("cache", "shell-initializer", g_profile->init_offset,
+			entry, 0x28);
 		trial_failure("shell initializer bytes", g_profile->init_offset);
 		goto fail;
 	}
+	debug_logf("cache", "shell-initializer-verified offset=0x%08X pool_address=0x%08X",
+		(unsigned int)g_profile->init_offset,
+		(unsigned int)(uintptr_t)shell_info->segments[1].vaddr + g_profile->pool_slot);
 	g_icon_pool_slot = (IconPool *volatile *)
 		((uintptr_t)shell_info->segments[1].vaddr + g_profile->pool_slot);
+	debug_logf("cache", "pool-slot address=0x%08X pool=0x%08X surface_pool=0x%08X",
+		(unsigned int)(uintptr_t)g_icon_pool_slot,
+		(unsigned int)(uintptr_t)*g_icon_pool_slot,
+		(unsigned int)(uintptr_t)(*g_icon_pool_slot ? (*g_icon_pool_slot)->surface_pool : NULL));
 	if (*g_icon_pool_slot && (*g_icon_pool_slot)->surface_pool) {
+		debug_logf("cache", "pool-ready immediate-install");
 		result = install_paf_hook();
+		debug_logf("cache", "immediate-install result=%d", result);
 		if (result < 0)
 			goto fail;
 		return 0;
 	}
 	g_pool_init_hook = taiHookFunctionOffset(&g_pool_init_ref, shell_modid, 0,
 		g_profile->init_offset, 1, initialize_icon_pool);
+	debug_logf("cache", "pool-hook result=%d offset=0x%08X",
+		g_pool_init_hook, (unsigned int)g_profile->init_offset);
 	if (g_pool_init_hook < 0) {
 		trial_failure("shell initializer hook", (uint32_t)g_pool_init_hook);
 		goto fail;
 	}
+	debug_logf("cache", "waiting-for-pool hook_uid=%d", g_pool_init_hook);
 #if LIVEAREA_ICON_CACHE_LOGGING
 	static const char waiting[] = "icon-cache trial waiting for icon pool\n";
 	trial_log(waiting, sizeof(waiting) - 1);
@@ -616,6 +907,7 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 	return 0;
 
 fail:
+	debug_logf("cache", "start-failed result=%d", result);
 	icon_cache_trial_stop();
 	return result;
 }

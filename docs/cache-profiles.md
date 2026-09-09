@@ -126,13 +126,19 @@ and original retail device trials are recorded in [the historical cache notes](i
 
 ## Hardware coverage
 
-The original correction has a retail 3.60 device-validation record. The 3.65 and
-PTEL ports have firmware analysis, real-byte, sanitizer, and relocation coverage,
-but no corresponding hardware run has been performed. The v1.5.0 release is not
-claimed to have passed a populated 500-icon/50-page hardware test on any profile.
-Neither host mocks nor valid hook prologues prove the full scheduler/renderer.
+The original correction has a retail 3.60 device-validation record. Retail 3.65
+now also has an affected-library hardware run: recovery produced 573 visible
+applications across 15 pages, and scrolling, edit mode, idle, and repeated
+sleep/wake worked with the cache correction enabled. Its trace recorded 32 LRU
+evictions without a cache-scan error. PTEL retains firmware-analysis, real-byte,
+sanitizer, and relocation coverage but no corresponding hardware run.
+
+This does not establish a populated 500-top-level-icon/50-page result: the retail
+3.65 database used 15 ordinary pages and many folders. Neither host mocks nor one
+device result prove the full scheduler/renderer at the absolute boundary.
 
 On each additional device, verify boot, repeated first-to-last-page scrolling,
 artwork reloads after revisiting pages, folder moves, launches, and persistence
-across a second reboot. Keep plugin, configuration, and database rollback backups.
+across a second reboot. Keep plugin, configuration, and database rollback backups;
+an expanded database can exceed stock-shell limits when the plugin is disabled.
 This is a remaining validation task, not an intentionally disabled feature.

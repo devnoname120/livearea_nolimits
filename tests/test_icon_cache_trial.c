@@ -13,6 +13,10 @@
 
 #include "../src/icon_cache_trial.c"
 
+#if LIVEAREA_DEBUG_LOGGING
+#include "debug_capture.h"
+#endif
+
 uint32_t __stack_chk_guard;
 
 static const struct TestCacheProfile {
@@ -485,11 +489,21 @@ int main(int argc, char **argv)
 	g_query_error = 1;
 	*(IconPool **)((uint8_t *)shell.segments[1].vaddr + test_profile->pool_slot) = NULL;
 	int queries = g_paf_queries;
-	assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) == 0);
+		assert(icon_cache_trial_start(42, test_profile->shell_nid, &shell) == 0);
+#if LIVEAREA_DEBUG_LOGGING
+		assert(test_debug_capture_contains("[cache] start shell_modid=42"));
+		assert(test_debug_capture_contains("[cache] profile-selected"));
+		assert(test_debug_capture_contains("[cache] waiting-for-pool"));
+#endif
 	assert(g_pool_init_hook == 457 && g_scan_hook < 0 && g_paf_queries == queries);
 	check_log("waiting for icon pool");
 	g_query_error = 0;
-	initialize_icon_pool();
+		initialize_icon_pool();
+#if LIVEAREA_DEBUG_LOGGING
+		assert(test_debug_capture_contains("[cache] pool-initializer-enter"));
+		assert(test_debug_capture_contains("[cache] paf-lookup result=0"));
+		assert(test_debug_capture_contains("[cache] hooks-active"));
+#endif
 	assert(g_original_init_calls == 1 && g_scan_hook == 456 && g_paf_queries == queries + 1);
 	check_log("active (LRU + consumer reload)");
 	assert(g_apply_hook == 458);
@@ -669,11 +683,18 @@ int main(int argc, char **argv)
 	*clock = 100;
 	candidates[0].last_used = 80;
 	candidates[1].last_used = 10;
-	candidates[2].last_used = 50;
-	int freed_before = g_surface_releases;
-	releases = g_log_writes;
-	assert(scan_icon_surfaces(&cache, original_evict, &selected) == 1);
-	assert(g_surface_releases - freed_before == 1);
+		candidates[2].last_used = 50;
+		int freed_before = g_surface_releases;
+		releases = g_log_writes;
+#if LIVEAREA_DEBUG_LOGGING
+		test_debug_capture_reset();
+#endif
+		assert(scan_icon_surfaces(&cache, original_evict, &selected) == 1);
+#if LIVEAREA_DEBUG_LOGGING
+		assert(test_debug_capture_contains("[cache] scan-enter"));
+		assert(test_debug_capture_contains("[cache] scan-exit"));
+#endif
+		assert(g_surface_releases - freed_before == 1);
 	assert(selected == &candidates[1] && !candidates[1].surface);
 	assert(candidates[0].surface && candidates[2].surface);
 	assert(scan_icon_surfaces(&cache, original_evict, &selected) == 1);
@@ -773,10 +794,10 @@ int main(int argc, char **argv)
 	g_multiple_count = 1;
 	for (i = 0; i < 32; ++i) {
 		surface.references = 1;
-		image.surface = &surface;
-		before = image;
-		assert(scan_icon_surfaces(&cache, original_evict, &selected) == 1);
-		before.surface = NULL;
+			image.surface = &surface;
+			before = image;
+			assert(scan_icon_surfaces(&cache, original_evict, &selected) == 1);
+			before.surface = NULL;
 		assert(memcmp(&image, &before, sizeof(image)) == 0);
 	}
 	g_multiple_items = NULL;

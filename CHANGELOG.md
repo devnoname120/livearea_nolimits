@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.7.0 - 2026-09-09
+
+### Fixed
+
+- Remove the pre-start `SceDbRecovery` allocator-entry hook. Its eight-byte
+  taiHEN/substitute jump overlaps a loader relocation targeting the allocator's
+  imported stack-guard MOVW. A pure-passthrough hook reproduced the same retail
+  3.65 shutdown, while the seven direct recovery patches completed normally.
+- Stop validating or resolving the unrelated allocator prologue and LSDB count
+  export. Recovery now validates and installs only the seven instruction patches
+  it needs, avoiding both the v1.6.0 guard-address rejection and the late-
+  relocation collision.
+- Require the configured top-level limit to equal page capacity. At the current
+  50 pages and 10 icons per page, the native allocator is already bounded to 500
+  top-level entries without the unsafe hook.
+
+### Added
+
+- Add compile-time comprehensive diagnostics for shell, recovery, and icon-cache
+  startup and lifecycle analysis. They remain disabled by default and are absent
+  from the release binary.
+
+### Hardware validation
+
+- On retail 3.65, an affected database with 500 visible and 73 hidden
+  applications recovered to 573 visible applications across 15 pages. The cache
+  correction was enabled; scrolling, edit mode, one-minute idle, and repeated
+  sleep/wake completed without an OS failure.
+- The recovery module started and stopped normally, and all seven temporary
+  patches were released. Equivalent affected-library testing remains outstanding
+  on retail 3.60 and PTEL 3.60, as does the absolute 500-top-level-icon/50-page
+  boundary.
+
+### Operational note
+
+- Disabling the plugin does not contract an expanded `app.db`. A stock shell can
+  fail to boot when the saved page or application counts exceed stock limits;
+  restore a stock-compatible database backup when disabling the plugin.
+
 ## 1.6.0 - 2026-09-07
 
 ### Fixed

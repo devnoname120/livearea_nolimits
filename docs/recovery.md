@@ -7,17 +7,18 @@ icon-cache correction. It extends the existing `SceDbRecovery` algorithm; it doe
 not rebuild `app.db`, reinstall applications, suppress the warning, or introduce
 a second database implementation. Runtime logging remains disabled by default.
 
-The implementation has passed host sanitizer tests, tests using both retail
-recovery text images, execution of the relevant original ARM functions with the
-assembled replacements, and taiHEN prologue relocation checks. Both ARM build
-configurations have been built. These are offline results: restoration on a Vita
-with a pre-existing hidden application library has not yet been verified.
+The implementation has passed host sanitizer tests, checks using both retail
+recovery text images, and execution of the relevant original ARM functions with
+the assembled replacements. Retail 3.65 hardware testing restored 73 applications
+from the hidden page into a 500-visible-application library, producing 573 visible
+applications across 15 pages. The same test completed with the icon-cache
+correction enabled; scrolling, edit mode, idle, and repeated sleep/wake all worked.
 
-An additional import-validation defect in v1.4.0/v1.5.0 is corrected in v1.6.0.
-The old validator rejected the loader-resolved stack-guard
-address, so the recovery extension could silently fall back to the native limits.
-See the imported-guard regression below; the reported shutdown still requires
-an affected-device retest.
+Version 1.7.0 removes the recovery allocator-entry hook. Hardware tracing showed
+that even a pure-passthrough hook at that pre-start address causes a shutdown,
+whereas the same seven direct recovery patches complete successfully without it.
+The preceding v1.6.0 guard-validation error and the unsafe hook timing are detailed
+below.
 
 ## Why installation order matters
 
@@ -69,37 +70,46 @@ All original bytes are verified before the first recovery modification. The
 replacement bytes are assembled from `src/limits.h`, not hard-coded encodings.
 The native ten-icons-per-page loops and ten-entry appearance table are unchanged.
 
-The allocator at `0x5F50` is wrapped to count existing top-level entries across
-pages `0` through `LIVEAREA_PAGE_LIMIT - 1`. At the configured top-level limit it
-returns the native hidden-page sentinel without allocating another slot. This
-keeps recovery aligned with the current 500-entry/50-page shell configuration,
-including when a custom top-level limit is below the total page-slot capacity.
-Folder contents do not contribute to this
-ordinary-page count. Count-query errors propagate without changing output slots.
+No function-entry hook is installed in the recovery allocator. The configured
+top-level limit is exactly the physical page capacity:
 
-The allocator's first 24 bytes are checked, including all register, opcode and
-address bits of its relocated MOVW/MOVT pair. The address must match the plugin's
-own loader-resolved `__stack_chk_guard` import from SceLibKernel. It is not a
-recovery-text-relative address or the value stored in the guard variable.
-The real taiHEN transformer requires an eight-byte jump here and preserves ten
-bytes of displaced instructions; both relocator passes are tested.
+```text
+50 pages * 10 icons per page = 500 top-level icons
+```
 
-### Imported-guard regression
+`src/limits.h` enforces that equality. The native allocator therefore cannot
+place more top-level entries than the configured shell limit once the direct page
+limit patches are active. A source configuration with a lower top-level limit than
+its page capacity is intentionally rejected rather than relying on the unsafe
+pre-start hook.
 
-In both inspected retail recovery images, the import descriptor at `0x2C538`
-names library `0xCAE9ACE6`. Its variable NID table at `0x2D3C4` names
-`__stack_chk_guard` (`0x93B8AA67`); the reference-table slot at `0x2DA40` points
-to relocation records at `0x2DA58`. The records explicitly relocate the allocator
-MOVW at `0x5F56` and MOVT at `0x5F5A` to the imported variable, with zero addends.
-These offsets are relative to segment 0. The placeholder is not runtime storage
-for the variable, as independently seen in the earlier PAF guard investigation.
+### Why the allocator hook was removed
 
-The old host fixture incorrectly relocated this operand into recovery text,
-matching the validator's incorrect assumption. A regression using a separate
-imported guard address failed against v1.5.0: the native start was called but
-the allocator hook and all seven patches were skipped. The corrected validator
-accepts that exact import, rejects the old reference-table/record placeholders,
-and rejects every changed opcode, register or address bit. All profiles use it.
+The allocator begins at segment-0 offset `0x5F50`. In both inspected retail
+recovery images, its imported `__stack_chk_guard` operand is finalized by loader
+relocations targeting the MOVW at `0x5F56` and MOVT at `0x5F5A`. taiHEN installs
+an eight-byte Thumb entry jump over `0x5F50` through `0x5F57`, so the MOVW
+relocation overlaps the last two bytes of that jump.
+
+The hook was installed while intercepting module start, before those import
+relocations reached their final state. Static substitute tests could relocate a
+stable snapshot, but they did not model the loader subsequently rewriting bytes
+inside the installed jump and its copied continuation prologue.
+
+The hardware sequence isolated this boundary:
+
+- r3 installed only the seven direct recovery patches and restored all 73 hidden
+  applications without an OS crash;
+- r4 added a pure-passthrough allocator hook with no logging, LSDB calls, or
+  placement policy in its body, and the Vita powered off immediately;
+- r5 removed the allocator hook, retained the seven patches, re-enabled the
+  icon-cache correction, and again completed recovery and normal LiveArea use.
+
+Version 1.6.0 also compared the pre-start operand with this plugin's own imported
+guard address. The hardware trace showed the operand still pointed to the recovery
+module's relocation reference slot at `text + 0x2DA40`, so that comparison rejected
+the module before any recovery patch was installed. Version 1.7.0 no longer treats
+the unrelated allocator prologue as a prerequisite for the seven direct patches.
 
 The [issue #2 reproduction](https://github.com/devnoname120/livearea_nolimits/issues/2#issuecomment-5574338737)
 provides a database with 510 visible application rows, one hidden row, 52 folder
@@ -107,9 +117,14 @@ icons and 96 ordinary-page entries. SQLite integrity and foreign-key checks pass
 The video shows a database update followed by shutdown; it does not identify a
 faulting instruction. With counts obtained using the inspected LSDB SQL, the
 original ARM recovery planner returns `min(1, 500 - 510) = -10`; the patched
-planner returns `1`. This reproduces the skipped-extension defect and invalid
-native budget, not the complete device shutdown or successful materialization.
-The uploaded database and video remain local test inputs, not repository assets.
+planner returns `1`.
+
+A second affected-device database contained 500 visible and 73 hidden
+applications. Its original planner budget was zero and its patched budget was 73.
+The [retail 3.65 r5 test](https://github.com/devnoname120/livearea_nolimits/issues/2#issuecomment-5609052347)
+materialized all 73 applications and completed normal shell use. The uploaded
+databases, videos, and diagnostic logs remain local test inputs, not repository
+assets.
 
 ## Module lifecycle
 
@@ -127,19 +142,19 @@ it is not the public six-argument ABI. Arguments and native results are forwarde
 A local result slot is supplied only when the caller did not provide one.
 
 Unload and stop interception are registered before start interception. At a
-matching recovery start, the plugin validates the loaded module, resolves the
-LSDB top-level-count function, installs the allocator guard and the seven patches,
-then invokes the native start. Unrelated modules and unsupported identities pass
-through unchanged. Reentrant target lifecycle operations are rejected rather than
-allowing concurrent patch installation or removal.
+matching recovery start, the plugin validates the loaded module and all seven
+patch sites, installs those direct patches, then invokes the native start. It does
+not hook the recovery allocator. Unrelated modules and unsupported identities
+pass through unchanged. Reentrant target lifecycle operations are rejected rather
+than allowing concurrent patch installation or removal.
 
-Successful native stop removes the recovery hook and patches while its memory is
-still mapped. A failed stop leaves them installed. Partial installation rolls back;
-if rollback itself fails, the partially modified module is not started or unloaded.
-The plugin refuses its own unload while patched recovery is running or cleanup
-cannot complete. Failed native starts are cleaned up only after confirming that
-the module remains mapped; an unexpected disappearance pins the extension rather
-than restoring bytes into unmapped memory.
+Successful native stop removes the patches while recovery memory is still mapped.
+A failed stop leaves them installed. Partial installation rolls back; if rollback
+itself fails, the partially modified module is not started or unloaded. The plugin
+refuses its own unload while patched recovery is running or cleanup cannot complete.
+Failed native starts are cleaned up only after confirming that the module remains
+mapped; an unexpected disappearance pins the extension rather than restoring bytes
+into unmapped memory.
 
 An unavailable recovery extension does not remove the already-working SceShell
 page/count patches or the independent icon-cache correction. Validation failures
@@ -168,8 +183,8 @@ python3 tests/run.py \
 ```
 
 The substitute checkout must be at the revision documented in the icon-cache
-notes. With recovery inputs, the optional relocator test also checks the recovery
-allocator prologue at two aligned text bases.
+notes. Its relocator tests cover the remaining shell and PAF function hooks; the
+recovery extension no longer contains a function-entry hook.
 
 Host tests use placeholder replacement bytes, as the existing shell tests do.
 The separate optional instruction test requires Unicorn 2.x and an unstripped
@@ -188,29 +203,33 @@ python3 tests/test_recovery_firmware.py \
 Optionally append `--database /path/to/copied-app.db` to derive planning inputs
 from a saved database using the inspected LSDB count queries. This opens the
 copy read-only, reports only counts, and verifies that its hash is unchanged.
-The instruction test also checks the firmware's guard-import relocation records.
+The instruction test also verifies that the allocator guard-import relocation
+overlaps the old eight-byte pre-start hook range, documenting why that hook must
+not return.
 
 The 500-visible/two-hidden regression is exercised with original and patched ARM
-instructions. Host tests separately model materialization onto a new eleventh
-page, unchanged existing pages, repeated boot without duplicate insertion, total
-and top-level boundaries, query errors, every partial installation, failed native
-start/stop/unload, re-entry and cleanup failures. These models are not an execution
-of the entire Vita database, scheduler and UI.
+instructions. Host tests cover every direct-patch byte, partial installation,
+failed native start/stop/unload, re-entry, cleanup, repeated recovery starts, and
+the fact that allocator-entry changes no longer affect validation. These models
+are not an execution of the entire Vita database, scheduler, and UI.
 
-The expanded-capacity regression additionally restores from 255 through 500
-top-level entries, fills the final slot of page 49, rejects a 501st entry, retains
-the full layout over a simulated module restart, and reuses a freed final slot.
-See [the 500-icon capacity notes](top-level-capacity.md) for combined native shell
-and recovery verification against the final assembled plugin.
+See [the 500-icon capacity notes](top-level-capacity.md) for the combined native
+shell and recovery verification against the final assembled plugin.
 
-## Device acceptance still required
+## Hardware coverage and rollback
 
-Preserve a backup of the active plugin, configuration and layout database before
-an on-device trial. Activate the corrected SUPRX with a full reboot, not standby.
-For an affected library, confirm that the existing 500 visible and two hidden
-applications become 502 visible without reinstalling applications or manually
-rebuilding the database. Confirm folders and positions are preserved, launches
-work, and a second reboot introduces neither duplicates nor renewed hiding.
+Retail 3.65 recovery is validated on an affected device at 500 visible plus 73
+hidden applications. The database update completed, all 73 applications appeared
+across 15 pages, and the recovery module stopped and rolled back its temporary
+patches cleanly. Equivalent affected-library recovery remains untested on retail
+3.60 and PTEL 3.60 hardware.
+
+Keep backups of the active plugin, configuration, and a stock-compatible layout
+database. Disabling the plugin does not shrink an already-expanded `app.db`; a
+stock shell can fail to boot when that database contains pages or counts beyond
+its native limits. Holding L disables plugins but does not make such a database
+stock-compatible. Restore a compatible backup at the same time as disabling the
+plugin, or use Safe Mode database rebuild as the destructive fallback.
 
 At the real configured counted-icon or top-level capacity, applications can still
 remain hidden. A persistent warning at those boundaries is not the old 500-limit

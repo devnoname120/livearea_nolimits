@@ -5,6 +5,10 @@
 
 #include "../src/main.c"
 
+#if LIVEAREA_DEBUG_LOGGING
+#include "debug_capture.h"
+#endif
+
 extern const char *test_patch_name(const uint8_t *data);
 
 static uint8_t *g_text;
@@ -139,11 +143,18 @@ static void reset_attempt(const PatchProfile *profile)
 	g_fail_injection = -1;
 	g_injection_calls = 0;
 	g_release_calls = 0;
+#if LIVEAREA_DEBUG_LOGGING
+	test_debug_capture_reset();
+#endif
 }
 
 static void expect_rejection(void)
 {
 	assert(module_start(0, NULL) == SCE_KERNEL_START_FAILED);
+#if LIVEAREA_DEBUG_LOGGING
+	assert(test_debug_capture_contains("[main] module-start"));
+	assert(test_debug_capture_contains("[main] module-start failed"));
+#endif
 	assert(g_injection_calls == 0 && g_live_injections == 0);
 	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);
 	assert(g_release_calls == 0);
@@ -157,6 +168,15 @@ static void test_profile(const PatchProfile *profile)
 	memcpy(original, g_text, profile->text_size);
 	reset_attempt(profile);
 	assert(module_start(0, NULL) == SCE_KERNEL_START_SUCCESS);
+#if LIVEAREA_DEBUG_LOGGING
+	assert(test_debug_capture_contains("[shell] lookup result=0"));
+	assert(test_debug_capture_contains("[shell] profile-selected"));
+	assert(test_debug_capture_contains("[shell] validation-complete"));
+	assert(test_debug_capture_contains("[shell] patch-injected index=21"));
+	assert(test_debug_capture_contains("[main] cache-start result=0"));
+	assert(test_debug_capture_contains("[main] recovery-start result=0"));
+	assert(test_debug_capture_contains("[main] module-start success"));
+#endif
 	assert(g_injection_calls == ARRAY_SIZE(patches_360) && g_live_injections == ARRAY_SIZE(patches_360));
 	assert(g_recovery_calls == 1 && g_recovery_live);
 #ifdef LIVEAREA_ICON_CACHE_TRIAL
@@ -171,6 +191,9 @@ static void test_profile(const PatchProfile *profile)
 	assert(g_live_injections == ARRAY_SIZE(patches_360) && g_recovery_live);
 	g_recovery_busy = 0;
 	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);
+#if LIVEAREA_DEBUG_LOGGING
+	assert(test_debug_capture_contains("[main] module-stop success"));
+#endif
 	assert(g_live_injections == 0 && g_release_calls == ARRAY_SIZE(patches_360));
 	assert(memcmp(g_text, original, profile->text_size) == 0);
 	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);

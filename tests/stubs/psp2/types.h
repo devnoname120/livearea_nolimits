@@ -4,6 +4,7 @@
 #include <stdint.h>
 typedef int SceUID;
 typedef uint32_t SceSize;
+typedef uint64_t SceUInt64;
 #define SCE_KERNEL_START_SUCCESS 0
 #define SCE_KERNEL_START_FAILED 1
 #define SCE_KERNEL_STOP_SUCCESS 0

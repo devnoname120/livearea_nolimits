@@ -8,12 +8,12 @@ remain unchanged. Recovery consumes the same constants. No database schema,
 folder format, texture-pool size, theme table or icon-cache implementation changes
 are part of this extension.
 
-The change is implemented and verified offline for the retail 3.60, retail 3.65
-and PTEL 3.60 shell profiles. It has not been installed as a 500-icon candidate or
-tested with a 50-page library on hardware. The previous recovery candidate remains
-the device-tested build; its successful normal boot is not evidence for 50 pages.
-The release enables the existing retail 3.60 icon-cache correction and uses
-`CMAKE_BUILD_TYPE=Release` with `LIVEAREA_ICON_CACHE_LOGGING=OFF`.
+The change is implemented and verified for the retail 3.60, retail 3.65, and PTEL
+3.60 shell profiles. Retail 3.65 hardware testing recovered a database from 500
+visible plus 73 hidden applications to 573 visible applications across 15 pages,
+with the multi-firmware icon-cache correction enabled. Retail 3.60 and PTEL still
+lack equivalent large-library hardware coverage. Release builds use
+`CMAKE_BUILD_TYPE=Release` with both logging options disabled.
 
 ## Why the count no longer stops at 255
 
@@ -53,19 +53,20 @@ records, so its internal branches remain valid when copied into the shell.
 
 The existing eleven page-limit sites receive 50 from `src/limits.h`. The
 independent ten-entry appearance-table bound and ten-icons-per-page loops are
-not patched. The recovery allocator's existing guard now enforces 500 entries
-and its native page creation/search patches use 50 pages.
+not patched. The configured top-level limit must equal page capacity, so the native
+allocator cannot place more than 500 top-level entries once its page creation and
+search limits are raised to 50. The unsafe pre-start allocator hook used by earlier
+recovery builds has been removed.
 
 ## Offline verification
 
 `tests/run.py` builds and runs the actual C startup/recovery logic under ASan and
 UBSan. It checks all shell profiles, every corrupt expected byte, every partial
-installation and rollback, cache-enabled/disabled integration and optional
-recovery failures. Host recovery tests cover the existing hidden-app scenario
-and filling the layout from 255 through 500 entries, including the final slot,
-full rejection, simulated restart and freed-slot reuse. The native recovery
-routines are tested separately; the host materialization model is not a complete
-execution of the Vita database.
+installation and rollback, cache-enabled/disabled integration, and optional
+recovery failures. Recovery tests verify the five counted-capacity patches, two
+page-range patches, repeated starts, lifecycle failures, and independence from
+the relocating allocator entry. The native recovery routines are tested
+separately; no host model is treated as a complete execution of the Vita database.
 
 With `LIVEAREA_TEST_PLUGIN_ELF` set, the runner emits a manifest directly from the
 compiled production C patch tables and invokes `tests/test_shell_capacity.py`.
@@ -105,25 +106,25 @@ host-test environment. The substitute revision is pinned as described in the
 [cache notes](icon-cache-trial.md). No firmware or third-party implementation
 sources are included in the repository.
 
-## Hardware acceptance
+## Hardware coverage
 
-Treat crossing 255 and scaling to 50 pages as separate experiments. A first trial
-at 260 entries/26 pages isolates integer-width behaviour; a subsequent 500/50
-trial exercises the larger page range. Those trials require deliberately built
-configurations and backups, not editing a live database to force a count.
+Retail 3.65 has passed cold recovery from 500 visible plus 73 hidden applications,
+producing 15 pages. Scrolling, edit mode, one-minute idle, and repeated sleep/wake
+worked with the icon-cache correction enabled. This exercises counts above 500
+but not the absolute 500-top-level/50-page boundary: that database had many folder
+entries and only 15 ordinary pages.
 
-With a backed-up representative library, validate cold boot and a second reboot,
-installation at 499/500/501 entries, deletion/reinstallation, page creation and
-removal, moves between pages 48 and 49, folder moves and application launches.
-Repeatedly scroll from the first to last page and back while checking artwork,
-responsiveness and memory use. Preserve the database layout and compare it after
-restarting. Also test recovery of applications hidden before plugin activation.
+Further validation should cover installation at 999/1,000/1,001 counted entries,
+movement and deletion on pages 48 and 49, a second reboot, and the same recovery
+scenario on retail 3.60 and PTEL hardware. Keep plugin and database rollback
+backups; disabling the plugin while retaining an expanded database can leave the
+stock shell unable to boot.
 
-Integer encoding is no longer the known obstacle. UI scheduling, metadata growth
-and texture-cache behaviour at this scale remain hardware-validation risks.
+Integer encoding is no longer the known obstacle. UI scheduling, metadata growth,
+and texture-cache behaviour at the full 50-page boundary remain hardware risks.
 Version 1.5.0 supplies the cache correction for every supported shell profile;
-see [cache profiles](cache-profiles.md). Firmware-byte and host validation do not
-establish equivalent large-library rendering stability on untested hardware.
+see [cache profiles](cache-profiles.md). One successful retail 3.65 library does
+not establish equivalent stability on other hardware or at the absolute limits.
 A separate byte value 255 inspected in the earlier `sub_835713F8` candidate is
 used while walking a bounded tag/length byte buffer, not the LSDB icon count;
 that code has not been patched. This is not an exhaustive claim about every

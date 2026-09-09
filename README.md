@@ -14,14 +14,15 @@ It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Version 1.6.0 is built in Release mode with runtime logging disabled,
+writes. Version 1.7.0 is built in Release mode with runtime logging disabled,
 including when the icon-cache correction is enabled.
 
-Version 1.6.0 corrects the recovery allocator's imported stack-guard validation.
-In v1.4.0/v1.5.0, the incorrect address check could silently leave recovery at
-the native 500-application limit. The correction passes offline regression and
-firmware tests; the reported shutdown during database updating still needs an
-affected-device retest. See [the recovery notes](docs/recovery.md).
+Version 1.7.0 fixes hidden-application recovery by retaining the seven validated
+`SceDbRecovery` instruction patches while removing the unsafe pre-start allocator
+hook. On retail 3.65, the release candidate restored 73 hidden applications into
+a 500-visible-application library, producing 573 visible applications across 15
+pages. Scrolling, edit mode, idle, and repeated sleep/wake then completed normally
+with the icon-cache correction enabled. See [the recovery notes](docs/recovery.md).
 
 The feature parity introduced in v1.5.0 is retained on every supported profile:
 
@@ -33,20 +34,21 @@ The feature parity introduced in v1.5.0 is retained on every supported profile:
 | LRU icon-cache eviction and artwork reload | Yes | Yes | Yes |
 
 All runtime patches remain conditional on successful module and code validation.
-The new cache profiles were verified against the corresponding firmware binaries
-and regression tests, not on retail 3.65 or PTEL hardware. See
-[cache profile validation](docs/cache-profiles.md) for identities, offsets, and
-the distinction between implemented feature parity and hardware coverage.
+The cache profiles were verified against the corresponding firmware binaries and
+regression tests. Retail 3.65 now also has the affected-library hardware run above;
+PTEL does not. See [cache profile validation](docs/cache-profiles.md) for identities,
+offsets, and the distinction between implemented feature parity and coverage at
+the absolute 500-top-level-icon/50-page boundary.
 
 Pages after the original first ten use the firmware's default page appearance.
 The plugin intentionally leaves the ten-entry custom theme/layout table bounds
 unchanged so that extra pages cannot read beyond that table.
 
-Version 1.4.0 replaces the previous 255-icon/26-page limits with wider,
-same-size instruction blocks. The count was already 32-bit; no database-format
-change is required. These changes pass offline firmware and native ARM tests,
-but 500 top-level icons on 50 pages have not yet been validated on hardware.
-See [the capacity implementation and validation notes](docs/top-level-capacity.md).
+Version 1.4.0 replaced the previous 255-icon/26-page limits with wider, same-size
+instruction blocks. The count was already 32-bit; no database-format change is
+required. Retail 3.65 has now run 573 visible applications across 15 pages, but
+500 top-level icons on all 50 pages remain untested. See
+[the capacity implementation and validation notes](docs/top-level-capacity.md).
 
 Version 1.2 corrects the firmware profiles in 1.0/1.1: the original reference
 was PTEL 3.60, and the profile previously labeled 3.65 was actually retail 3.60.
@@ -64,13 +66,14 @@ PTEL 3.60.
 The implementation and device-validation record are in
 [the icon-cache notes](docs/icon-cache-trial.md).
 
-Version 1.4.0 also extends boot recovery for applications already hidden by the
+Version 1.4.0 also extended boot recovery for applications already hidden by the
 old 500-application limit before this plugin was installed. Recovery uses the same
-configured application/page limits as the shell and guards the 500 top-level-icon
-capacity. It retains the native recovery algorithm rather than reinstalling apps,
-rebuilding the database, or hiding the warning. Offline verification and the
-remaining affected-device check are documented in
-[the recovery notes](docs/recovery.md).
+configured application and page limits as the shell. Version 1.7.0 removes the
+pre-start allocator hook; the top-level limit is instead required to equal the
+physical page capacity, currently 50 pages times 10 icons. The implementation
+retains the native recovery algorithm rather than reinstalling applications,
+rebuilding the database, or hiding the warning. Hardware and offline validation
+are documented in [the recovery notes](docs/recovery.md).
 
 ## Build with the VitaSDK image
 
@@ -90,7 +93,8 @@ docker run --rm --platform linux/amd64 \
   cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DLIVEAREA_ICON_CACHE_TRIAL=ON \
-    -DLIVEAREA_ICON_CACHE_LOGGING=OFF
+    -DLIVEAREA_ICON_CACHE_LOGGING=OFF \
+    -DLIVEAREA_DEBUG_LOGGING=OFF
 
 docker run --rm --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
@@ -106,15 +110,15 @@ runtime logging. The project retains its explicit `-O2` optimization level.
 The icon-cache correction defaults to `ON` in fresh configurations. The historical
 option name `LIVEAREA_ICON_CACHE_TRIAL` is retained for build compatibility; pass
 `-DLIVEAREA_ICON_CACHE_TRIAL=OFF` for an explicit limits/recovery-only build.
-Logging is controlled separately by
-`LIVEAREA_ICON_CACHE_LOGGING`, which defaults to `OFF`. Logless builds do not
-open, truncate, write or delete the diagnostic file, even on validation or hook
-failure; an existing log from an older build is left untouched.
+Logging is controlled separately. `LIVEAREA_ICON_CACHE_LOGGING` and the broader
+`LIVEAREA_DEBUG_LOGGING` both default to `OFF`. Logless builds do not open,
+truncate, write, delete, or rotate a diagnostic file, even on validation failure;
+an existing log from an older build is left untouched.
 
-For diagnostic builds only, also pass `-DLIVEAREA_ICON_CACHE_LOGGING=ON`.
-The older v1.3.0 asset has startup diagnostics enabled and remains unchanged;
-the v1.4.0, v1.5.0, and v1.6.0 release assets disable them. See
-[the changelog](CHANGELOG.md).
+For recovery or cross-component diagnostics, enable `LIVEAREA_DEBUG_LOGGING` and
+set a recognizable `LIVEAREA_DEBUG_BUILD_ID`. The older v1.3.0 asset has startup
+diagnostics enabled and remains unchanged; the v1.4.0 through v1.7.0 release assets
+disable all runtime logging. See [the changelog](CHANGELOG.md).
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 
@@ -137,6 +141,12 @@ Do not delete applications or manually rebuild the database as a prerequisite
 for testing the recovery correction. Applications can still remain hidden when
 the configured total or top-level capacity is genuinely exhausted.
 
+An expanded database can exceed the stock shell's page or application limits.
+Disabling the plugin, including by holding L during boot, does not contract that
+database and can leave the stock shell unable to finish booting. Restore a
+stock-compatible `app.db` backup at the same time as disabling the plugin; Safe
+Mode database rebuild is the destructive fallback.
+
 This is an FW 3.60/FW 3.65 system-shell patch. Keep a working plugin-recovery
 method before installing it. Holding `L` during boot normally suppresses taiHEN
 plugin loading and allows a bad configuration entry to be removed.
@@ -145,7 +155,8 @@ plugin loading and allows a bad configuration entry to be removed.
 
 The limits are in `src/limits.h`. Page limits still use 8-bit Thumb immediate
 fields, but the top-level count uses wide Thumb-2 comparisons. The top-level and
-total limits must be encodable by the corresponding Thumb-2 instructions. The
-header rejects a top-level limit that exceeds the configured page capacity or
-counted-icon limit, and ten icons per page remains fixed. The assembler rejects
-oversized instruction blocks; native tests also verify their exact footprints.
+total limits must be encodable by the corresponding Thumb-2 instructions. Because
+the recovery allocator cannot safely be hooked before module relocation, the
+top-level limit must equal `page limit * 10`; it also cannot exceed the counted-
+icon limit. Ten icons per page remains fixed. The assembler rejects oversized
+instruction blocks; native tests also verify their exact footprints.

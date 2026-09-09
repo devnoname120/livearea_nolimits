@@ -93,6 +93,60 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
                     subprocess.run([str(binary), *inputs], check=True)
             else:
                 subprocess.run([str(binary), *arguments], check=True)
+
+    for sync_interval in (1, 8):
+        debug_log = work / f"test_debug_log-{sync_interval}"
+        subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+            "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+            "-fsanitize=address,undefined", "-DLIVEAREA_DEBUG_LOGGING=1",
+            '-DLIVEAREA_DEBUG_BUILD_ID="test-build"',
+            f"-DLIVEAREA_DEBUG_SYNC_INTERVAL={sync_interval}",
+            "-I", str(root / "tests/stubs"),
+            str(root / "tests/test_debug_log.c"), str(root / "src/debug_log.c"),
+            "-o", str(debug_log)], check=True)
+        subprocess.run([str(debug_log)], check=True)
+
+    debug_startup = work / "test_startup_debug"
+    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-DLIVEAREA_ICON_CACHE_TRIAL=1",
+        "-DLIVEAREA_DEBUG_LOGGING=1", "-I", str(root / "tests/stubs"),
+        str(root / "tests/test_startup.c"), str(root / "tests/debug_capture.c"),
+        str(replacements), "-o", str(debug_startup)], check=True)
+    subprocess.run([str(debug_startup), *sys.argv[1:]], check=True)
+
+    debug_recovery = work / "test_recovery_debug"
+    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-DLIVEAREA_DEBUG_LOGGING=1",
+        "-I", str(root / "tests/stubs"), str(root / "tests/test_recovery.c"),
+        str(root / "tests/debug_capture.c"), str(replacements),
+        "-o", str(debug_recovery)], check=True)
+    subprocess.run([str(debug_recovery), *recovery_inputs], check=True)
+
+    debug_cache = work / "test_icon_cache_debug"
+    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-DLIVEAREA_DEBUG_LOGGING=1",
+        "-I", str(root / "tests/stubs"),
+        str(root / "tests/test_icon_cache_trial.c"),
+        str(root / "tests/debug_capture.c"), "-o", str(debug_cache)], check=True)
+    for nid, paf, shell, _ in cache_inputs:
+        inputs = [hex(nid)]
+        if paf:
+            inputs.append(paf)
+            if shell:
+                inputs.append(shell)
+        subprocess.run([str(debug_cache), *inputs], check=True)
+
+    debug_consumer = work / "test_icon_consumer_debug"
+    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-DLIVEAREA_DEBUG_LOGGING=1",
+        "-I", str(root / "tests/stubs"), str(root / "tests/test_icon_consumer.c"),
+        str(root / "tests/debug_capture.c"), "-o", str(debug_consumer)], check=True)
+    subprocess.run([str(debug_consumer)], check=True)
+
     substitute_path = os.environ.get("LIVEAREA_TEST_SUBSTITUTE")
     if substitute_path:
         if not any(paf and shell for _, paf, shell, _ in cache_inputs):
@@ -121,7 +175,7 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
                 print(f"Cache relocator profile: 0x{nid:08X}", flush=True)
                 subprocess.run([str(hook_test), paf, offsets["PAF_EVICT_OFFSET"],
                                 offsets["PAF_SCAN_OFFSET"], shell, init_offset,
-                                offsets["PAF_APPLY_OFFSET"], *recovery_inputs[1::2]], check=True)
+                                offsets["PAF_APPLY_OFFSET"]], check=True)
     plugin_elf = os.environ.get("LIVEAREA_TEST_PLUGIN_ELF")
     if plugin_elf:
         arm_python = os.environ.get("LIVEAREA_TEST_ARM_PYTHON", sys.executable)

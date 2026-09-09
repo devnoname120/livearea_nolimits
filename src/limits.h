@@ -14,9 +14,9 @@
 #error LIVEAREA_PAGE_LIMIT must fit in the original 8-bit Thumb immediates
 #endif
 
-#if LIVEAREA_TOP_LEVEL_LIMIT < 1 || \
-	LIVEAREA_TOP_LEVEL_LIMIT > LIVEAREA_PAGE_LIMIT * LIVEAREA_ICONS_PER_PAGE
-#error LIVEAREA_TOP_LEVEL_LIMIT must fit in the configured pages
+/* Recovery cannot safely hook its pre-start allocator to impose a lower limit. */
+#if LIVEAREA_TOP_LEVEL_LIMIT != LIVEAREA_PAGE_LIMIT * LIVEAREA_ICONS_PER_PAGE
+#error LIVEAREA_TOP_LEVEL_LIMIT must equal the configured page capacity
 #endif
 
 #if LIVEAREA_TOP_LEVEL_LIMIT > LIVEAREA_ICON_LIMIT || LIVEAREA_ICON_LIMIT > 0x7FFFFFFF

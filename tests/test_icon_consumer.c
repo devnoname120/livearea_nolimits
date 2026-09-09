@@ -159,6 +159,9 @@ int main(void)
 	g_get_surface = get_consumer_surface;
 	image.handle.vtable = &canonical_vtable;
 	void *handle = &image.handle;
+#if LIVEAREA_DEBUG_LOGGING
+	test_debug_capture_reset();
+#endif
 	/* A negative control preserves the exact failure this wrapper must prevent. */
 	assert(scan_icon_surfaces(&cache, original_evict, NULL) == 1);
 	int stock_result = stock_consumer(&widget, &handle, 2, 1);
@@ -170,6 +173,10 @@ int main(void)
 	assert(!widget.artwork);
 	reset_widget(&widget);
 	dispatch_consumer(&widget, &handle);
+#if LIVEAREA_DEBUG_LOGGING
+	assert(test_debug_capture_contains("[cache] apply-enter"));
+	assert(test_debug_capture_contains("[cache] apply-exit"));
+#endif
 	assert(widget.artwork == &surface);
 	reset_widget(&widget);
 	queued_loads = 0;

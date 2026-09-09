@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <taihen.h>
 
+#include "debug_log.h"
 #include "limits.h"
 #include "recovery.h"
 #ifdef LIVEAREA_ICON_CACHE_TRIAL
@@ -197,19 +198,28 @@ static int bytes_equal(const volatile uint8_t *actual,
 static void release_patches(void)
 {
 	int index;
+	int result = 0;
+
+	debug_logf("shell", "release-begin shell_modid=%d", shell_module_id);
 
 #ifdef LIVEAREA_ICON_CACHE_TRIAL
+	debug_logf("main", "cache-stop begin");
 	icon_cache_trial_stop();
+	debug_logf("main", "cache-stop complete");
 #endif
 
 	for (index = (int)ARRAY_SIZE(patch_uids) - 1; index >= 0; --index) {
 		if (patch_uids[index] >= 0) {
-			taiInjectRelease(patch_uids[index]);
+			result = taiInjectRelease(patch_uids[index]);
+			debug_logf("shell", "patch-release index=%d uid=%d result=%d",
+				index, patch_uids[index], result);
 			patch_uids[index] = -1;
 		}
 	}
+	(void)result;
 
 	shell_module_id = -1;
+	debug_logf("shell", "release-complete");
 }
 
 static int verify_patches(const SceKernelSegmentInfo *text_segment,
@@ -219,23 +229,44 @@ static int verify_patches(const SceKernelSegmentInfo *text_segment,
 	SceSize text_size = text_segment->memsz;
 	unsigned int index;
 
-	if (text_size != profile->text_size)
+	debug_logf("shell", "validation-begin text=0x%08X size=0x%08X expected=0x%08X patches=%u",
+		(unsigned int)text_start, (unsigned int)text_size,
+		(unsigned int)profile->text_size, profile->patch_count);
+	if (text_size != profile->text_size) {
+		debug_logf("shell", "validation-size-mismatch actual=0x%08X expected=0x%08X",
+			(unsigned int)text_size, (unsigned int)profile->text_size);
 		return -1;
+	}
 
 	for (index = 0; index < profile->patch_count; ++index) {
 		const Patch *patch = &profile->patches[index];
+		debug_logf("shell", "patch-verify index=%u offset=0x%08X size=%u",
+			index, (unsigned int)patch->offset, (unsigned int)patch->size);
 
 		if (patch->size == 0 || patch->size > sizeof(patch->expected) ||
 			patch->offset > text_size ||
-			patch->size > text_size - patch->offset)
+			patch->size > text_size - patch->offset) {
+			debug_logf("shell", "patch-metadata-invalid index=%u offset=0x%08X size=%u text_size=0x%08X",
+				index, (unsigned int)patch->offset, (unsigned int)patch->size,
+				(unsigned int)text_size);
 			return -1;
+		}
 
 		if (!bytes_equal(
 			(const volatile uint8_t *)(text_start + patch->offset),
-			patch->expected, patch->size))
+			patch->expected, patch->size)) {
+			debug_logf("shell", "patch-mismatch index=%u offset=0x%08X size=%u",
+				index, (unsigned int)patch->offset, (unsigned int)patch->size);
+			debug_log_hex("shell", "patch-actual", patch->offset,
+				(const void *)(text_start + patch->offset), patch->size);
+			debug_log_hex("shell", "patch-expected", patch->offset,
+				patch->expected, patch->size);
 			return -1;
+		}
+		debug_logf("shell", "patch-verified index=%u", index);
 	}
 
+	debug_logf("shell", "validation-complete patches=%u", profile->patch_count);
 	return 0;
 }
 
@@ -246,38 +277,65 @@ static int install_patches(void)
 	SceKernelModuleInfo module_info;
 	unsigned int index;
 	int result;
+	int optional_result;
 
 	tai_info.size = sizeof(tai_info);
+	debug_logf("shell", "lookup begin");
 	result = taiGetModuleInfo("SceShell", &tai_info);
+	debug_logf("shell", "lookup result=%d modid=%d nid=0x%08X",
+		result, result < 0 ? -1 : tai_info.modid,
+		result < 0 ? 0U : (unsigned int)tai_info.module_nid);
 	if (result < 0)
 		return result;
 
 	profile = find_patch_profile(tai_info.module_nid);
-	if (profile == NULL)
+	if (profile == NULL) {
+		debug_logf("shell", "profile-missing nid=0x%08X",
+			(unsigned int)tai_info.module_nid);
 		return -1;
+	}
+	debug_logf("shell", "profile-selected nid=0x%08X text_size=0x%08X patches=%u",
+		(unsigned int)profile->module_nid, (unsigned int)profile->text_size,
+		profile->patch_count);
 
 	module_info.size = sizeof(module_info);
 	result = sceKernelGetModuleInfo(tai_info.modid, &module_info);
+	debug_logf("shell", "module-info result=%d text=0x%08X text_size=0x%08X data=0x%08X data_size=0x%08X",
+		result,
+		result < 0 ? 0U : (unsigned int)(uintptr_t)module_info.segments[0].vaddr,
+		result < 0 ? 0U : (unsigned int)module_info.segments[0].memsz,
+		result < 0 ? 0U : (unsigned int)(uintptr_t)module_info.segments[1].vaddr,
+		result < 0 ? 0U : (unsigned int)module_info.segments[1].memsz);
 	if (result < 0)
 		return result;
 
-	if (module_info.segments[SCE_SHELL_TEXT_SEGMENT].vaddr == NULL)
+	if (module_info.segments[SCE_SHELL_TEXT_SEGMENT].vaddr == NULL) {
+		debug_logf("shell", "text-segment-null");
 		return -1;
+	}
 
 	result = verify_patches(&module_info.segments[SCE_SHELL_TEXT_SEGMENT],
 		profile);
-	if (result < 0)
+	if (result < 0) {
+		debug_logf("shell", "validation-failed result=%d", result);
 		return result;
+	}
 
 	shell_module_id = tai_info.modid;
 	for (index = 0; index < profile->patch_count; ++index) {
 		const Patch *patch = &profile->patches[index];
 
+		debug_logf("shell", "patch-inject index=%u offset=0x%08X size=%u",
+			index, (unsigned int)patch->offset, (unsigned int)patch->size);
 		patch_uids[index] = taiInjectData(shell_module_id,
 			SCE_SHELL_TEXT_SEGMENT, patch->offset,
 			patch->replacement, patch->size);
+		debug_logf("shell", "patch-injected index=%u uid=%d",
+			index, patch_uids[index]);
 		if (patch_uids[index] < 0) {
 			result = patch_uids[index];
+			debug_logf("shell", "patch-injection-failed index=%u result=%d",
+				index, result);
 			release_patches();
 			return result;
 		}
@@ -287,10 +345,18 @@ static int install_patches(void)
 	/* Saved layouts can depend on these limit patches. The optional trial
 	 * logs failures and cleans up its own hook; never drop the working
 	 * page/count patches just because the experimental hook is unavailable. */
-	(void)icon_cache_trial_start(tai_info.modid, tai_info.module_nid, &module_info);
+	optional_result = icon_cache_trial_start(tai_info.modid, tai_info.module_nid,
+		&module_info);
+	debug_logf("main", "cache-start result=%d", optional_result);
+#else
+	optional_result = 0;
+	debug_logf("main", "cache-start disabled");
 #endif
 
-	(void)recovery_start(tai_info.module_nid);
+	optional_result = recovery_start(tai_info.module_nid);
+	debug_logf("main", "recovery-start result=%d", optional_result);
+	(void)optional_result;
+	debug_logf("shell", "install-complete");
 	return 0;
 }
 
@@ -301,16 +367,32 @@ int module_start(SceSize argc, const void *args)
 
 	(void)argc;
 	(void)args;
+	debug_log_open();
+	debug_logf("main", "module-start argc=%u args=0x%08X pages=%u top_level=%u counted=%u cache=%u",
+		(unsigned int)argc, (unsigned int)(uintptr_t)args,
+		LIVEAREA_PAGE_LIMIT, LIVEAREA_TOP_LEVEL_LIMIT, LIVEAREA_ICON_LIMIT,
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+		1U
+#else
+		0U
+#endif
+	);
 
 	for (index = 0; index < ARRAY_SIZE(patch_uids); ++index)
 		patch_uids[index] = -1;
+	debug_logf("main", "patch-state-reset count=%u",
+		(unsigned int)ARRAY_SIZE(patch_uids));
 
 	result = install_patches();
 	if (result < 0) {
 		release_patches();
+		debug_logf("main", "module-start failed result=%d", result);
+		debug_log_close();
 		return SCE_KERNEL_START_FAILED;
 	}
 
+	debug_logf("main", "module-start success");
+	debug_log_flush();
 	return SCE_KERNEL_START_SUCCESS;
 }
 
@@ -318,9 +400,18 @@ int module_stop(SceSize argc, const void *args)
 {
 	(void)argc;
 	(void)args;
+	debug_logf("main", "module-stop argc=%u args=0x%08X",
+		(unsigned int)argc, (unsigned int)(uintptr_t)args);
 
-	if (recovery_stop() < 0)
+	int result = recovery_stop();
+	debug_logf("main", "recovery-stop result=%d", result);
+	if (result < 0) {
+		debug_logf("main", "module-stop cancelled");
+		debug_log_flush();
 		return SCE_KERNEL_STOP_CANCEL;
+	}
 	release_patches();
+	debug_logf("main", "module-stop success");
+	debug_log_close();
 	return SCE_KERNEL_STOP_SUCCESS;
 }

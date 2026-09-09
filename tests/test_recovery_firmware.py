@@ -19,6 +19,8 @@ from unicorn.arm_const import (
 BASE = 0x81000000
 STACK = 0x70000000
 RETURN = STACK + 0x10000
+ALLOCATOR_ENTRY = 0x5F50
+TAIHEN_THUMB_HOOK_SIZE = 8
 PATCHES = (
     (0x06280, bytes.fromhex("b0 f5 fa 7f"), "patch_cmp_r0_icon_limit"),
     (0x07054, bytes.fromhex("b0 f5 fa 7f"), "patch_cmp_r0_icon_limit"),
@@ -137,6 +139,7 @@ def check_guard_import(text: bytes) -> None:
         first += size
     assert (0, 0x5F56, 47, 0) in matches, "Allocator MOVW must bind the imported guard"
     assert (0, 0x5F5A, 48, 0) in matches, "Allocator MOVT must bind the imported guard"
+    assert ALLOCATOR_ENTRY <= 0x5F56 < ALLOCATOR_ENTRY + TAIHEN_THUMB_HOOK_SIZE
 
 
 def check_image(path: Path, symbols: dict[str, bytes],
@@ -190,7 +193,7 @@ def check_image(path: Path, symbols: dict[str, bytes],
     print(f"Native ARM recovery passed: {path} (NID 0x{nid:08X})")
     print("  Stock 500+2 hidden => 0; assembled fix => 2; three native planning functions,")
     print("  two admission branches, page creation/search bounds and LSDB errors verified")
-    print("  Allocator MOVW/MOVT are zero-addend SceLibKernel guard-import relocations")
+    print("  Allocator guard relocation overlaps an eight-byte pre-start entry hook")
 
 
 def main() -> None:

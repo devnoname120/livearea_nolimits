@@ -7,9 +7,11 @@ Unknown identities, mismatched sizes, or altered patch sites fail without
 installing any patch. An injection failure rolls back earlier injections.
 
 These 22 patches belong to SceShell. Current source separately validates seven
-SceDbRecovery instruction patches and its allocator hook at module startup; see
-[recovery profile validation](recovery.md). A failed optional recovery installation
-does not roll back the already-validated shell capacity patches.
+direct SceDbRecovery instruction patches at module startup; see
+[recovery profile validation](recovery.md). It deliberately does not hook the
+recovery allocator because its pre-start import relocation overlaps taiHEN's entry
+jump. A failed optional recovery installation does not roll back the already-
+validated shell capacity patches.
 
 | Profile | Module NID | Segment 0 size | Reference |
 | --- | --- | --- | --- |
@@ -114,5 +116,7 @@ The host tests use placeholder replacement data to exercise installation and
 rollback; Thumb replacement instructions are assembled in the VitaSDK build.
 Firmware binaries are local verification inputs, not repository or release
 assets. Binary analysis and host tests establish profile selection, patch
-locations, and rollback behavior; they do not establish the visible LiveArea
-result on a retail 3.65 device.
+locations, and rollback behavior. Retail 3.65 additionally has an affected-device
+test restoring 73 hidden applications into a 15-page LiveArea with the cache
+correction enabled; retail 3.60 and PTEL still lack equivalent large-library
+hardware coverage.
