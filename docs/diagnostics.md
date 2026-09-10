@@ -1,10 +1,18 @@
 # Testing v1.8.0-rc1 and collecting diagnostics
 
+The regular [v1.8.0 release](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.8.0)
+has logging disabled and supports 4,000 counted icons. This guide is for existing
+rc1 test requests; its diagnostic assets still use a 1,000 counted-icon limit.
+If your layout exceeds that limit, request a matching diagnostic build in your
+issue before switching to rc1. Logs left by an older build do not describe a
+subsequent no-logs v1.8.0 session.
+
 This prerelease keeps 50 pages, 500 top-level icons, 1,000 counted application/content
 icons, hidden-application recovery, and the icon-cache correction. It changes the
 recovery interception and enables logging so failures can be investigated.
-It has not yet been confirmed on affected hardware. Please test the operation
-requested in your issue and report results there, including successful results.
+Some reporters have confirmed improvements, but hidden-app recovery and the
+remaining hangs still need investigation. Please test the operation requested
+in your issue and report results there, including successful results.
 
 ## Install and test
 
@@ -66,7 +74,9 @@ this candidate is for diagnosis, not a performance benchmark.
 
 ## Reproduce the diagnostic build
 
-Use the SDK image described in the README. Configure with:
+Use the SDK image described in the README and the `v1.8.0-rc1` source tag to
+reproduce the existing diagnostic. Current main has different capacity limits;
+use a distinct build ID when making a diagnostic from newer source. Configure with:
 
 ```sh
 cmake -S . -B build/diagnostic -G Ninja \

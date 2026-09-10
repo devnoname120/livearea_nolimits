@@ -1,13 +1,18 @@
 # LiveArea NoLimits
 
-**v1.8.0-rc1 is a diagnostic prerelease for issue reporters.** It replaces the
-shared-library recovery hooks implicated in VitaShell/application crashes and
-retains the capacity patches, hidden-app recovery, and icon-cache correction.
-[Download the candidate](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.8.0-rc1)
-and follow the [test and log collection instructions](docs/diagnostics.md).
-Hardware confirmation is pending. The regular v1.7.0 asset still contains the
-shared-library lifecycle hooks; its earlier recovery success does not establish
-that it is free of the separate application-launch defect.
+**[Download v1.8.0](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.8.0).**
+This regular release disables runtime logging and replaces the shared-library
+recovery hooks implicated in VitaShell/application crashes. It retains hidden-app
+recovery and the icon-cache correction, and includes the 4,000 counted-icon limit.
+Upgrade from v1.7.0 or earlier by replacing the existing SUPRX and fully rebooting.
+
+Reporters using rc1 confirmed improvements to VitaShell rename/edit, delayed
+crashes on one setup, and PSTV page creation after correcting the configuration.
+Remaining PSP/PSX launch and system-hang reports are still being investigated in
+[#6](https://github.com/devnoname120/livearea_nolimits/issues/6). Actual hidden-app
+restoration with the replacement recovery callback and the full capacity remain
+unconfirmed on affected hardware. See [diagnostics](docs/diagnostics.md) if you are
+already following a test request in an issue.
 
 `livearea_nolimits.suprx` is a taiHEN user plugin for the PlayStation Vita retail
 FW 3.60 and FW 3.65 `SceShell`, with a separate PTEL/testkit 3.60 profile.
@@ -18,23 +23,24 @@ It changes the home-screen limits to:
 - 500 top-level icons in total;
 - 4,000 counted application/content icons instead of 500.
 
-The 4,000 counted-icon limit is the current source default on `main`. The
-already-published v1.8.0-rc1 diagnostic remains at 1,000; its assets are unchanged.
+The 4,000 counted-icon limit is included in v1.8.0. The already-published
+v1.8.0-rc1 diagnostic remains at 1,000; its assets are unchanged.
 
 The plugin validates every original instruction before applying any injection.
 It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Version 1.7.0 is built in Release mode with runtime logging disabled,
+writes. Version 1.8.0 is built in Release mode with runtime logging disabled,
 including when the icon-cache correction is enabled.
 
-Version 1.7.0 fixes hidden-application recovery by retaining the seven validated
+Version 1.7.0 changed hidden-application recovery by retaining the seven validated
 `SceDbRecovery` instruction patches while removing the unsafe pre-start allocator
 hook. On retail 3.65, the release candidate restored 73 hidden applications into
 a 500-visible-application library, producing 573 visible applications across 15
-pages. Scrolling, edit mode, idle, and repeated sleep/wake then completed normally
-with the icon-cache correction enabled. See [the recovery notes](docs/recovery.md).
+pages. This historical result does not validate v1.8.0's replacement callback or
+resolve the separate shared-hook defect in v1.7.0. See
+[the recovery notes](docs/recovery.md).
 
 The feature parity introduced in v1.5.0 is retained on every supported profile:
 
@@ -129,8 +135,8 @@ an existing log from an older build is left untouched.
 
 For recovery or cross-component diagnostics, enable `LIVEAREA_DEBUG_LOGGING` and
 set a recognizable `LIVEAREA_DEBUG_BUILD_ID`. The older v1.3.0 asset has startup
-diagnostics enabled and remains unchanged; the v1.4.0 through v1.7.0 release assets
-disable all runtime logging. See [the changelog](CHANGELOG.md).
+diagnostics enabled and remains unchanged; the v1.4.0 through v1.8.0 regular
+release assets disable all runtime logging. See [the changelog](CHANGELOG.md).
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.
 
@@ -145,6 +151,7 @@ ur0:tai/livearea_nolimits.suprx
 ```
 
 Reboot so the plugin runs before the shell constructs its page container.
+Do not place this user plugin under `*KERNEL`.
 Do not place it under `*NPXS10015`; that title ID belongs to SceSettings.
 
 To upgrade, replace the existing SUPRX at the configured path and reboot.

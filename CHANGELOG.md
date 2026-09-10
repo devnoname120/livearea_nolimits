@@ -1,10 +1,23 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 - 2026-09-10
 
+- Publish the recovery interception fix from rc1 in the regular release: replace
+  shared `SceLibKernel` lifecycle hooks with the validated SceShell recovery-ready
+  callback and temporary recovery-module stop redirect. Retain all seven recovery
+  capacity patches, cleanup protection, and the icon-cache correction.
+- Build in Release mode with `-O2` and both runtime logging options disabled.
+  Existing diagnostic logs are left untouched.
 - Raise the counted application/content-icon limit from 1,000 to 4,000 in both
   SceShell and hidden-app recovery. Keep 50 pages, 500 top-level slots, and ten
   icons per page. The published v1.8.0-rc1 artifacts remain unchanged.
+- Update the plugin module version to 1.8.
+
+Reporter results with rc1 include working VitaShell rename/edit in #6, resolution
+of delayed crashes on one setup in #4, and successful PSTV page creation after
+correcting the configuration in #9. Remaining PSP/PSX launch and system hangs in
+#6 are unresolved. These reports do not establish hidden-app restoration with
+the replacement callback or hardware acceptance at the full 4,000-icon capacity.
 
 ## 1.8.0-rc1 - 2026-09-10 (prerelease)
 
