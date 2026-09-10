@@ -1,5 +1,10 @@
 # 500 top-level icons and 50 pages
 
+Current `main` uses a 4,000 counted-application limit while retaining these page
+and top-level limits. The 1,000-entry references and recorded test results below
+describe the earlier releases; the current native tests also cover the
+3,999/4,000/4,001 counted boundary.
+
 ## Scope
 
 Version 1.4.0 raises the top-level limit from 255 to 500 and the page limit from

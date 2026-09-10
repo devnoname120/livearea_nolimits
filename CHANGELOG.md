@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Raise the counted application/content-icon limit from 1,000 to 4,000 in both
+  SceShell and hidden-app recovery. Keep 50 pages, 500 top-level slots, and ten
+  icons per page. The published v1.8.0-rc1 artifacts remain unchanged.
+
 ## 1.8.0-rc1 - 2026-09-10 (prerelease)
 
 - Replace shared `SceLibKernel` module lifecycle interception with the validated

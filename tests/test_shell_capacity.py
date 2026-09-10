@@ -23,7 +23,7 @@ OUTPUT = STACK + 0x1000
 RETURN = STACK + 0x10000
 REGISTERS = (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
              UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7)
-COUNTS = tuple(range(1101)) + (32767, 32768, 65535, 65536, 0x7FFFFFFF)
+COUNTS = tuple(range(4003)) + (32767, 32768, 65535, 65536, 0x7FFFFFFF)
 PROFILE_OFFSETS = {
     0x0552F692: (0x81000000, 0x552C6, 0x63A8E),
     0x5549BF1F: (0x81000000, 0x5531E, 0x63AE6),
@@ -163,7 +163,7 @@ def check_image(path: Path, profile: dict, manifest: dict,
     ):
         shell = NativeShell(text, base, admission, message, pages)
         for count in COUNTS:
-            for counted in (499, 500, 999, 1000):
+            for counted in (499, 500, 999, 1000, 1999, 2000, 3999, 4000, 4001):
                 shell.check_admission(count, counted, top_limit, counted_limit)
                 checks += 1
             shell.check_message(count, top_limit, counted_limit)
@@ -186,7 +186,7 @@ def main() -> None:
     args = parser.parse_args()
     assert len(args.inputs) % 2 == 0, "Expected NID/text pairs"
     manifest = json.loads(args.manifest.read_text())
-    assert (manifest["pages"], manifest["top_level"], manifest["counted"]) == (50, 500, 1000)
+    assert (manifest["pages"], manifest["top_level"], manifest["counted"]) == (50, 500, 4000)
     profiles = {p["nid"]: p for p in manifest["profiles"]}
     symbols = elf_symbols(args.plugin_elf)
     checks = 0

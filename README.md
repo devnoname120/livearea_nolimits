@@ -16,7 +16,10 @@ It changes the home-screen limits to:
 - 50 pages;
 - 10 top-level icons per page, unchanged from the firmware;
 - 500 top-level icons in total;
-- 1,000 counted application/content icons instead of 500.
+- 4,000 counted application/content icons instead of 500.
+
+The 4,000 counted-icon limit is the current source default on `main`. The
+already-published v1.8.0-rc1 diagnostic remains at 1,000; its assets are unchanged.
 
 The plugin validates every original instruction before applying any injection.
 It selects a patch profile by the loaded `SceShell` module NID and verifies its
@@ -38,7 +41,7 @@ The feature parity introduced in v1.5.0 is retained on every supported profile:
 | Feature | Retail 3.60 | Retail 3.65 | PTEL 3.60 |
 | --- | --- | --- | --- |
 | 500 top-level icons / 50 pages | Yes | Yes | Yes |
-| 1,000 counted application/content icons | Yes | Yes | Yes |
+| 4,000 counted application/content icons | Yes | Yes | Yes |
 | Hidden-application recovery extension | Yes | Yes | Yes |
 | LRU icon-cache eviction and artwork reload | Yes | Yes | Yes |
 

@@ -8,7 +8,7 @@
 #define LIVEAREA_PAGE_LIMIT       50
 #define LIVEAREA_ICONS_PER_PAGE   10
 #define LIVEAREA_TOP_LEVEL_LIMIT  500
-#define LIVEAREA_ICON_LIMIT       1000
+#define LIVEAREA_ICON_LIMIT       4000
 
 #if LIVEAREA_PAGE_LIMIT < 1 || LIVEAREA_PAGE_LIMIT > 255
 #error LIVEAREA_PAGE_LIMIT must fit in the original 8-bit Thumb immediates

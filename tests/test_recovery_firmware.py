@@ -156,18 +156,18 @@ def check_image(path: Path, symbols: dict[str, bytes],
         assert stock[offset:offset + len(original)] == original
         modified[offset:offset + len(original)] = replacement
     patched = bytes(modified)
-    for text, limit in ((stock, 500), (patched, 1000)):
-        for displayed in (0, 499, 500, 501, 999, 1000):
+    for text, limit in ((stock, 500), (patched, 4000)):
+        for displayed in (0, 499, 500, 501, 999, 1000, 1999, 2000, 3999, 4000):
             if displayed > limit:
                 continue
-            for hidden in (0, 1, 2, 1001):
+            for hidden in (0, 1, 2, 1001, 3000, 3999, 4000, 4001, 0x7FFFFFFF):
                 remaining = min(hidden, limit - displayed)
                 assert native_capacity(text, 0xC6B4, displayed, hidden) == remaining
                 assert native_capacity(text, 0xC724, displayed, hidden) == (-1 if remaining else 0)
                 assert native_capacity(text, 0xC7A4, displayed, hidden) == (0x80000 if remaining else 0)
         for displayed, hidden in ((-1, 2), (0, -1)):
             assert native_capacity(text, 0xC6B4, displayed, hidden) == 0
-        for count in (499, 500, 501, 999, 1000, 1001):
+        for count in (499, 500, 501, 999, 1000, 1001, 1999, 2000, 3999, 4000, 4001):
             assert branch_falls_through(text, 0x6280, UC_ARM_REG_R0, count, 0x6288) == (count < limit)
             assert branch_falls_through(text, 0x7054, UC_ARM_REG_R0, count, 0x705A) == (count >= limit)
         assert native_capacity(text, 0xC724, 500, 2, -123) == -123
@@ -177,11 +177,11 @@ def check_image(path: Path, symbols: dict[str, bytes],
     assert native_capacity(patched, 0xC6B4, 510, 1) == 1
     if database_counts:
         displayed, hidden = database_counts
-        assert 0 < hidden and 0 <= displayed <= 1000
+        assert 0 < hidden and 0 <= displayed <= 4000
         before = native_capacity(stock, 0xC6B4, displayed, hidden)
         after = native_capacity(patched, 0xC6B4, displayed, hidden)
         assert before == min(hidden, 500 - displayed)
-        assert after == min(hidden, 1000 - displayed)
+        assert after == min(hidden, 4000 - displayed)
         print(f"  Database-derived counts: {displayed} visible, {hidden} hidden; "
               f"native stock budget {before}, patched budget {after}")
     for text, limit in ((stock, 10), (patched, 50)):

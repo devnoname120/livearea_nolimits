@@ -302,7 +302,7 @@ int main(int argc, char **argv)
 	assert(argc % 2 == 1);
 	assert(LIVEAREA_TOP_LEVEL_LIMIT == 500);
 	assert(LIVEAREA_PAGE_LIMIT == 50);
-	assert(LIVEAREA_ICONS_PER_PAGE == 10 && LIVEAREA_ICON_LIMIT == 1000);
+	assert(LIVEAREA_ICONS_PER_PAGE == 10 && LIVEAREA_ICON_LIMIT == 4000);
 	assert(sizeof(((Patch *)0)->expected) >= 22);
 	assert(ARRAY_SIZE(patches_360) == 22);
 	for (index = 0; index < ARRAY_SIZE(patch_profiles); ++index) {
