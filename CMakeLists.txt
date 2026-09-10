@@ -10,7 +10,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(livearea_nolimits VERSION 1.7.0 LANGUAGES C ASM)
+project(livearea_nolimits VERSION 1.8.0 LANGUAGES C ASM)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 option(LIVEAREA_ICON_CACHE_TRIAL
@@ -61,6 +61,8 @@ target_compile_options(livearea_nolimits PRIVATE
 	-O2
 	-fno-pic
 	-fno-PIC
+	# vita-elf-create derives module metadata from the ELF, including debug data.
+	$<$<CONFIG:RelWithDebInfo>:-fdebug-prefix-map=${CMAKE_BINARY_DIR}=.>
 )
 
 target_include_directories(livearea_nolimits PRIVATE

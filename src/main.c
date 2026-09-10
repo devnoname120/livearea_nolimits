@@ -353,7 +353,8 @@ static int install_patches(void)
 	debug_logf("main", "cache-start disabled");
 #endif
 
-	optional_result = recovery_start(tai_info.module_nid);
+	optional_result = recovery_start(tai_info.modid, tai_info.module_nid,
+		&module_info);
 	debug_logf("main", "recovery-start result=%d", optional_result);
 	(void)optional_result;
 	debug_logf("shell", "install-complete");

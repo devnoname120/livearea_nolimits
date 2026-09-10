@@ -7,18 +7,23 @@ icon-cache correction. It extends the existing `SceDbRecovery` algorithm; it doe
 not rebuild `app.db`, reinstall applications, suppress the warning, or introduce
 a second database implementation. Runtime logging remains disabled by default.
 
-The implementation has passed host sanitizer tests, checks using both retail
-recovery text images, and execution of the relevant original ARM functions with
-the assembled replacements. Retail 3.65 hardware testing restored 73 applications
-from the hidden page into a 500-visible-application library, producing 573 visible
-applications across 15 pages. The same test completed with the icon-cache
-correction enabled; scrolling, edit mode, idle, and repeated sleep/wake all worked.
+Version 1.8.0-rc1 replaces the shared-library lifecycle hooks with a
+SceShell-local recovery-ready callback and a temporary redirect of the loaded
+recovery module's stop entry. It retains the seven capacity patches. The
+prerelease has diagnostic logging enabled; ordinary source builds still default
+to logging disabled. See [reporter diagnostics](diagnostics.md).
 
-Version 1.7.0 removes the recovery allocator-entry hook. Hardware tracing showed
-that even a pure-passthrough hook at that pre-start address causes a shutdown,
-whereas the same seven direct recovery patches complete successfully without it.
-The preceding v1.6.0 guard-validation error and the unsafe hook timing are detailed
-below.
+The current callback implementation is a candidate for reporter testing.
+Offline checks cover host lifecycle behavior with firmware bytes, native ARM
+capacity/planning instructions, and hook relocation. The earlier retail 3.65
+500-visible/73-hidden hardware result belongs to v1.7.0's previous interception
+path and is not hardware validation of v1.8.0-rc1. The candidate still needs
+confirmation of real hidden-app recovery, application launch, and sleep/wake.
+
+Version 1.7.0 removed the unsafe allocator-entry hook but retained lifecycle
+hooks in shared `SceLibKernel`. Issue #6's VitaShell dumps subsequently identified
+branches into SceShell-only plugin code from another process. The preceding
+allocator problem and its historical tests are documented below.
 
 ## Why installation order matters
 
@@ -128,38 +133,41 @@ assets.
 
 ## Module lifecycle
 
-The inspected PAF loader calls load, start, stop and unload separately. The plugin
-hooks the raw module-manager imports in `SceLibKernel`, library `0xEAED1616`:
+No module-manager import in `SceLibKernel`, `ScePaf`, or another shared library
+is hooked. The plugin validates SceShell's identity, text size, and the 12-byte
+entry sequence at segment-0 offset `0x1BFE`, then hooks that shell-local callback.
+Each of the three supported shell profiles has its own expected bytes.
 
-| Import | NID |
-| --- | --- |
-| `_sceKernelStartModule` | `0x72CD301F` |
-| `_sceKernelStopModule` | `0x086867A8` |
-| `_sceKernelUnloadModule` | `0x8E4A7716` |
+In the inspected retail 3.65 image, SceDbRecovery's module_start runs static
+constructors and registers PAF interface 1. SceShell's callback obtains that
+interface and invokes its initialization entry at interface offset +4. The new
+hook installs the recovery capacity patches before continuing to that native
+callback, after the recovery module has started and relocation has completed.
+This timing avoids the old allocator relocation collision. Actual affected-device
+recovery through this callback remains a reporter acceptance test.
 
-The raw start/stop fourth argument points to `{flags, option, result, reserved}`;
-it is not the public six-argument ABI. Arguments and native results are forwarded.
-A local result slot is supplied only when the caller did not provide one.
+The hook validates the loaded recovery module identity, both segment sizes, all
+seven original patch instructions, and the complete ten-byte module_stop entry
+at segment-0 offset `0x1E`. Before installing capacity patches, it redirects that
+stop entry to the plugin. The redirect is an unaligned Thumb literal branch;
+o substitute trampoline or pre-start allocator hook is used there.
 
-Unload and stop interception are registered before start interception. At a
-matching recovery start, the plugin validates the loaded module and all seven
-patch sites, installs those direct patches, then invokes the native start. It does
-not hook the recovery allocator. Unrelated modules and unsupported identities
-pass through unchanged. Reentrant target lifecycle operations are rejected rather
-than allowing concurrent patch installation or removal.
+When native module stop is requested, the redirect restores the capacity patches
+and the original stop entry while the module is still mapped, then calls the
+original stop with its arguments. The inspected native stop finalizes the module
+runtime and returns success. If cleanup fails, stop is cancelled and the remaining
+patch handles are retained for retry. The plugin refuses its own unload while
+recovery modifications or an active ready callback still depend on its code.
 
-Successful native stop removes the patches while recovery memory is still mapped.
-A failed stop leaves them installed. Partial installation rolls back; if rollback
-itself fails, the partially modified module is not started or unloaded. The plugin
-refuses its own unload while patched recovery is running or cleanup cannot complete.
-Failed native starts are cleaned up only after confirming that the module remains
-mapped; an unexpected disappearance pins the extension rather than restoring bytes
-into unmapped memory.
+Identity or byte mismatches leave recovery unmodified. Partial installation rolls
+back; if rollback fails, the native ready callback is blocked rather than running
+with a partial patch set. None of these optional recovery failures removes the
+already-installed shell capacity patches or the independent icon-cache correction.
 
-An unavailable recovery extension does not remove the already-working SceShell
-page/count patches or the independent icon-cache correction. Validation failures
-leave native recovery unchanged after successful rollback. They can therefore
-leave the original missing-app symptom, rather than risking an unsupported patch.
+Diagnostic logs distinguish callback installation, callback invocation, unpatched
+fallback, each injection, successful patching, native entry/return, rollback, and
+stop cleanup. `ready-hook` alone does not prove that recovery ran, and a native
+callback return does not prove that all hidden apps were restored.
 
 ## Repeating offline verification
 
@@ -184,7 +192,8 @@ python3 tests/run.py \
 
 The substitute checkout must be at the revision documented in the icon-cache
 notes. Its relocator tests cover the remaining shell and PAF function hooks; the
-recovery extension no longer contains a function-entry hook.
+recovery callback and its stop redirect are checked separately against the
+selected firmware bytes and the pinned hook engine.
 
 Host tests use placeholder replacement bytes, as the existing shell tests do.
 The separate optional instruction test requires Unicorn 2.x and an unstripped
@@ -209,8 +218,9 @@ not return.
 
 The 500-visible/two-hidden regression is exercised with original and patched ARM
 instructions. Host tests cover every direct-patch byte, partial installation,
-failed native start/stop/unload, re-entry, cleanup, repeated recovery starts, and
-the fact that allocator-entry changes no longer affect validation. These models
+failed stop and cleanup, re-entry, repeated recovery cycles, and plugin unload
+during an unpatched native callback. Diagnostic assertions cover both success
+and failure paths, including retained patches after failed rollback. These models
 are not an execution of the entire Vita database, scheduler, and UI.
 
 See [the 500-icon capacity notes](top-level-capacity.md) for the combined native
@@ -218,11 +228,12 @@ shell and recovery verification against the final assembled plugin.
 
 ## Hardware coverage and rollback
 
-Retail 3.65 recovery is validated on an affected device at 500 visible plus 73
+**Historical v1.7.0 evidence:** retail 3.65 recovery was tested at 500 visible plus 73
 hidden applications. The database update completed, all 73 applications appeared
 across 15 pages, and the recovery module stopped and rolled back its temporary
 patches cleanly. Equivalent affected-library recovery remains untested on retail
-3.60 and PTEL 3.60 hardware.
+3.60 and PTEL 3.60 hardware. The v1.8.0-rc1 callback implementation requires new
+reporter confirmation on affected devices; these older results do not carry over.
 
 Keep backups of the active plugin, configuration, and a stock-compatible layout
 database. Disabling the plugin does not shrink an already-expanded `app.db`; a

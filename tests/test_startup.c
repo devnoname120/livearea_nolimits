@@ -25,9 +25,12 @@ static int g_recovery_live;
 static int g_recovery_failure;
 static int g_recovery_busy;
 
-int recovery_start(uint32_t shell_nid)
+int recovery_start(SceUID shell_modid, uint32_t shell_nid,
+	const SceKernelModuleInfo *info)
 {
-	assert(shell_nid == g_module_nid && g_live_injections == ARRAY_SIZE(patches_360));
+	assert(shell_modid == 42 && shell_nid == g_module_nid);
+	assert(info->segments[0].vaddr == g_text);
+	assert(g_live_injections == ARRAY_SIZE(patches_360));
 	++g_recovery_calls;
 	if (g_recovery_failure)
 		return -1;

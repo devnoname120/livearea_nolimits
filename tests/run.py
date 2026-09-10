@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
+subprocess.run([sys.executable, str(root / "tests/test_recovery_hook_scope.py")], check=True)
 with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
     work = Path(temporary)
     # These tests exercise startup/rollback on the host. Thumb replacement
@@ -49,11 +50,24 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
         "-fsanitize=address,undefined", "-I", str(root / "tests/stubs"),
         str(root / "tests/test_recovery.c"), str(replacements),
         "-o", str(recovery)], check=True)
+    shell_inputs = {int(sys.argv[i], 0): sys.argv[i + 1]
+                    for i in range(1, len(sys.argv), 2)}
+    recovery_paths = {
+        suffix: os.environ.get(f"LIVEAREA_TEST_RECOVERY_{suffix}")
+        for suffix in ("360", "365")
+    }
     recovery_inputs = []
-    for suffix, nid in (("360", "0x0552F692"), ("365", "0x5549BF1F")):
-        path = os.environ.get(f"LIVEAREA_TEST_RECOVERY_{suffix}")
-        if path:
-            recovery_inputs.extend((nid, path))
+    for nid, suffix in (
+        (0x0552F692, "360"),
+        (0x5549BF1F, "365"),
+        (0xEAB89D5C, "360"),
+    ):
+        path = recovery_paths[suffix]
+        shell = shell_inputs.get(nid)
+        if path and shell:
+            recovery_inputs.extend((hex(nid), shell, path))
+        elif path and nid != 0xEAB89D5C:
+            raise SystemExit(f"{path} requires shell text for 0x{nid:08X}")
     subprocess.run([str(recovery), *recovery_inputs], check=True)
     paf_text = os.environ.get("LIVEAREA_TEST_PAF_TEXT")
     cache_inputs = []
@@ -176,13 +190,36 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
                 subprocess.run([str(hook_test), paf, offsets["PAF_EVICT_OFFSET"],
                                 offsets["PAF_SCAN_OFFSET"], shell, init_offset,
                                 offsets["PAF_APPLY_OFFSET"]], check=True)
+        recovery_offsets = dict(re.findall(
+            r"#define\s+(SHELL_RECOVERY_READY_OFFSET)\s+(0x[0-9A-Fa-f]+)U",
+            (root / "src/recovery.c").read_text()))
+        recovery_hook_test = work / "test_recovery_hook_transform"
+        subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+            "-std=gnu11", "-DFORCE_TARGET_arm",
+            "-I", str(substitute / "lib"), "-I", str(substitute / "generated"),
+            str(root / "tests/test_recovery_hook_transform.c"),
+            str(substitute / "lib/jump-dis.c"),
+            str(substitute / "lib/cbit/vec.c"),
+            str(substitute / "lib/strerror.c"),
+            "-o", str(recovery_hook_test)], check=True)
+        for nid, _, shell, _ in cache_inputs:
+            if shell:
+                print(f"Recovery callback relocator profile: 0x{nid:08X}", flush=True)
+                subprocess.run([str(recovery_hook_test), shell,
+                                recovery_offsets["SHELL_RECOVERY_READY_OFFSET"]],
+                               check=True)
+    arm_python = os.environ.get("LIVEAREA_TEST_ARM_PYTHON")
+    if arm_python:
+        subprocess.run([arm_python, str(root / "tests/test_recovery_stop_redirect.py")],
+                       check=True)
     plugin_elf = os.environ.get("LIVEAREA_TEST_PLUGIN_ELF")
     if plugin_elf:
-        arm_python = os.environ.get("LIVEAREA_TEST_ARM_PYTHON", sys.executable)
+        arm_python = arm_python or sys.executable
         if not sys.argv[1:]:
             raise SystemExit("Native shell tests require local shell NID/text pairs")
         subprocess.run([arm_python, str(root / "tests/test_shell_capacity.py"),
                         plugin_elf, str(manifest), *sys.argv[1:]], check=True)
-        if recovery_inputs:
+        firmware_recovery_paths = [path for path in recovery_paths.values() if path]
+        if firmware_recovery_paths:
             subprocess.run([arm_python, str(root / "tests/test_recovery_firmware.py"),
-                            plugin_elf, *recovery_inputs[1::2]], check=True)
+                            plugin_elf, *firmware_recovery_paths], check=True)

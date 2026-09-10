@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.0-rc1 - 2026-09-10 (prerelease)
+
+- Replace shared `SceLibKernel` module lifecycle interception with the validated
+  SceShell recovery-ready callback and a temporary recovery-module stop redirect.
+  Keep all seven recovery capacity patches and the icon-cache correction.
+- Retain patch handles after failed cleanup, cancel unsafe module stop, and reject
+  plugin unload while recovery patches or the native ready callback are active.
+- Add diagnostic events for every recovery validation and installation boundary,
+  expected/actual bytes on mismatch, native callback entry/return, and cleanup.
+- Ship this candidate with logging enabled, build ID `v1.8.0-rc1`, sampled cache
+  counters, current/previous log rotation, and explicit flushes at recovery
+  boundaries. Handle short log writes and report write failures.
+- Add regression checks for diagnostic failure paths and callback lifetime.
+
+This is an offline-validated candidate, not a hardware-confirmed stable release.
+Hidden-app recovery and the reported application, screenshot, freeze, and
+sleep/wake symptoms require reporter results with this exact build.
+
 ## 1.7.0 - 2026-09-09
 
 ### Fixed

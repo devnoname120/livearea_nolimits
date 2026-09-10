@@ -20,6 +20,8 @@ static int close_calls;
 static int remove_calls;
 static int rename_calls;
 static const char *opened_path;
+static unsigned int write_chunk;
+static int fail_write;
 
 SceUID sceIoOpen(const char *path, int flags, int mode)
 {
@@ -35,11 +37,15 @@ SceUID sceIoOpen(const char *path, int flags, int mode)
 int sceIoWrite(SceUID fd, const void *data, SceSize size)
 {
 	assert(fd == 7 || fd == 8);
+	++write_calls;
+	if (fail_write)
+		return 0;
+	if (write_chunk && size > write_chunk)
+		size = write_chunk;
 	assert(output_size + size < sizeof(output));
 	memcpy(output + output_size, data, size);
 	output_size += size;
 	output[output_size] = '\0';
-	++write_calls;
 	return (int)size;
 }
 
@@ -105,6 +111,8 @@ static void reset_output(void)
 	open_calls = write_calls = sync_calls = close_calls = 0;
 	remove_calls = rename_calls = 0;
 	opened_path = NULL;
+	write_chunk = 0;
+	fail_write = 0;
 }
 
 int main(void)
@@ -152,7 +160,21 @@ int main(void)
 	assert(sync_calls == 1);
 #endif
 
-	printf("Debug log: rotation, fallback, sequencing, timestamps, formatting, hex dumps and sync interval %u passed\n",
+	reset_output();
+	fail_primary = 0;
+	write_chunk = 7;
+	debug_log_open();
+	debug_logf("test", "short writes retain the complete line");
+	assert(strstr(output, "short writes retain the complete line\n"));
+	assert(write_calls > 2);
+	fail_write = 1;
+	debug_logf("test", "storage unavailable");
+	fail_write = 0;
+	debug_logf("test", "storage recovered");
+	assert(strstr(output, "storage recovered write_failures=1\n"));
+	debug_log_close();
+
+	printf("Debug log: rotation, fallback, short writes, failed writes, sequencing, timestamps, formatting, hex dumps and sync interval %u passed\n",
 		(unsigned int)LIVEAREA_DEBUG_SYNC_INTERVAL);
 	return 0;
 }

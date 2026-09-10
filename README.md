@@ -1,5 +1,14 @@
 # LiveArea NoLimits
 
+**v1.8.0-rc1 is a diagnostic prerelease for issue reporters.** It replaces the
+shared-library recovery hooks implicated in VitaShell/application crashes and
+retains the capacity patches, hidden-app recovery, and icon-cache correction.
+[Download the candidate](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.8.0-rc1)
+and follow the [test and log collection instructions](docs/diagnostics.md).
+Hardware confirmation is pending. The regular v1.7.0 asset still contains the
+shared-library lifecycle hooks; its earlier recovery success does not establish
+that it is free of the separate application-launch defect.
+
 `livearea_nolimits.suprx` is a taiHEN user plugin for the PlayStation Vita retail
 FW 3.60 and FW 3.65 `SceShell`, with a separate PTEL/testkit 3.60 profile.
 It changes the home-screen limits to:

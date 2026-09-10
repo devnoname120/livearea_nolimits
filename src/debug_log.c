@@ -24,6 +24,7 @@ static volatile int log_lock;
 static volatile unsigned int dropped_lines;
 static unsigned int sequence;
 static unsigned int unsynced_lines;
+static unsigned int write_failures;
 
 static void sync_log_locked(void)
 {
@@ -84,13 +85,26 @@ void debug_logf(const char *component, const char *format, ...)
 			" dropped=%u", dropped);
 		length += clamp_length(formatted, sizeof(line) - length);
 	}
+	if (write_failures && length < sizeof(line) - 1) {
+		formatted = sceClibSnprintf(line + length, sizeof(line) - length,
+			" write_failures=%u", write_failures);
+		length += clamp_length(formatted, sizeof(line) - length);
+	}
 	if (length == 0 || line[length - 1] != '\n') {
 		if (length >= sizeof(line) - 1)
 			length = sizeof(line) - 2;
 		line[length++] = '\n';
 	}
 
-	(void)sceIoWrite(log_fd, line, (SceSize)length);
+	/* A short write must not silently discard the rest of a diagnostic line. */
+	for (size_t written = 0; written < length;) {
+		int result = sceIoWrite(log_fd, line + written, (SceSize)(length - written));
+		if (result <= 0 || (size_t)result > length - written) {
+			++write_failures;
+			break;
+		}
+		written += (size_t)result;
+	}
 	++unsynced_lines;
 	if (unsynced_lines >= LIVEAREA_DEBUG_SYNC_INTERVAL)
 		sync_log_locked();
@@ -135,6 +149,7 @@ void debug_log_open(void)
 	log_lock = 0;
 	dropped_lines = 0;
 	unsynced_lines = 0;
+	write_failures = 0;
 	log_path = LIVEAREA_DEBUG_LOG_PATH;
 	log_fd = open_log(LIVEAREA_DEBUG_LOG_PATH, LIVEAREA_DEBUG_LOG_PREVIOUS_PATH);
 	if (log_fd < 0) {
@@ -143,8 +158,9 @@ void debug_log_open(void)
 			LIVEAREA_DEBUG_LOG_FALLBACK_PREVIOUS_PATH);
 	}
 	if (log_fd >= 0)
-		debug_logf("debug", "session-start build=%s path=%s",
-			LIVEAREA_DEBUG_BUILD_ID, log_path);
+		debug_logf("debug", "session-start build=%s path=%s sync_interval=%u",
+			LIVEAREA_DEBUG_BUILD_ID, log_path,
+			(unsigned int)LIVEAREA_DEBUG_SYNC_INTERVAL);
 }
 
 void debug_log_close(void)
