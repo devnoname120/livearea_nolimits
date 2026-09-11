@@ -1,5 +1,10 @@
 # Icon-cache feature parity
 
+> Historical v1.3-v1.8 implementation. Current releases use the
+> [per-instance cache implementation](instance-cache.md); the shared PAF hook
+> installation described below is no longer part of the production build.
+
+
 ## Supported features
 
 Version 1.5.0 enables the same icon-cache correction for retail 3.60, retail 3.65,

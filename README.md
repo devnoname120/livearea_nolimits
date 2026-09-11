@@ -1,12 +1,18 @@
 # LiveArea NoLimits
 
-**[Download v1.8.0](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.8.0).**
-This regular release disables runtime logging and replaces the shared-library
-recovery hooks implicated in VitaShell/application crashes. It retains hidden-app
-recovery and the icon-cache correction, and includes the 4,000 counted-icon limit.
-Upgrade from v1.7.0 or earlier by replacing the existing SUPRX and fully rebooting.
+**[Download v1.9.0](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.9.0).**
+The icon-cache correction now changes SceShell's own icon-pool and image objects
+instead of hooking shared PAF executable code. It retains single-victim LRU
+texture eviction and artwork reload, uses one SUPRX, and disables runtime logging.
+Replace your existing SUPRX and fully reboot to upgrade.
 
-Reporters using rc1 confirmed improvements to VitaShell rename/edit, delayed
+The 50-page, 500-top-level and 4,000-counted-icon limits are unchanged. Hidden-app
+recovery is unchanged too: fresh hidden-app restoration in
+[#10](https://github.com/devnoname120/livearea_nolimits/issues/10) and the reported
+recovery-time boot failure in [#8](https://github.com/devnoname120/livearea_nolimits/issues/8)
+remain unresolved. This cache change does not claim to fix those recovery issues.
+
+Earlier reporters using rc1 confirmed improvements to VitaShell rename/edit, delayed
 crashes on one setup, and PSTV page creation after correcting the configuration.
 Remaining PSP/PSX launch and system-hang reports are still being investigated in
 [#6](https://github.com/devnoname120/livearea_nolimits/issues/6). Actual hidden-app
@@ -31,7 +37,7 @@ It selects a patch profile by the loaded `SceShell` module NID and verifies its
 text-segment size and the expected code at every patch site. HENkaku version
 spoofing can remain enabled: the plugin does not use the system-version API. This
 protects unsupported firmware versions and already-modified shells from blind
-writes. Version 1.8.0 is built in Release mode with runtime logging disabled,
+writes. Version 1.9.0 is built in Release mode with runtime logging disabled,
 including when the icon-cache correction is enabled.
 
 Version 1.7.0 changed hidden-application recovery by retaining the seven validated
@@ -42,7 +48,7 @@ pages. This historical result does not validate v1.8.0's replacement callback or
 resolve the separate shared-hook defect in v1.7.0. See
 [the recovery notes](docs/recovery.md).
 
-The feature parity introduced in v1.5.0 is retained on every supported profile:
+The supported features are:
 
 | Feature | Retail 3.60 | Retail 3.65 | PTEL 3.60 |
 | --- | --- | --- | --- |
@@ -52,11 +58,14 @@ The feature parity introduced in v1.5.0 is retained on every supported profile:
 | LRU icon-cache eviction and artwork reload | Yes | Yes | Yes |
 
 All runtime patches remain conditional on successful module and code validation.
-The cache profiles were verified against the corresponding firmware binaries and
-regression tests. Retail 3.65 now also has the affected-library hardware run above;
-PTEL does not. See [cache profile validation](docs/cache-profiles.md) for identities,
-offsets, and the distinction between implemented feature parity and coverage at
-the absolute 500-top-level-icon/50-page boundary.
+The current cache implementation is validated against all three firmware profiles.
+A diagnostic build of this policy was tested on a retail 3.60 Vita: boot, rapid
+forward/reverse scrolling, allocation pressure and artwork reload completed.
+Retail 3.65 and PTEL have offline firmware/ARM validation for this implementation;
+the older recovery hardware results do not substitute for that cache testing.
+See [the per-instance cache notes](docs/instance-cache.md) for offsets, ownership
+and verification limits. Brief white placeholders can still appear while cold
+or evicted artwork loads; the 2 MiB icon texture pool has not been enlarged.
 
 Pages after the original first ten use the firmware's default page appearance.
 The plugin intentionally leaves the ten-entry custom theme/layout table bounds
@@ -81,8 +90,9 @@ validates the relevant SceShell/ScePaf code and data references before installin
 its hooks; if that optional path is unavailable, the baseline page/count patches
 remain active. That release uses only the baseline patches on retail 3.65 and
 PTEL 3.60.
-The implementation and device-validation record are in
-[the icon-cache notes](docs/icon-cache-trial.md).
+The historical implementation and device-validation record are in
+[the v1.3-v1.8 cache notes](docs/icon-cache-trial.md); v1.9 uses the per-instance
+implementation described above.
 
 Version 1.4.0 also extended boot recovery for applications already hidden by the
 old 500-application limit before this plugin was installed. Recovery uses the same
@@ -128,14 +138,15 @@ runtime logging. The project retains its explicit `-O2` optimization level.
 The icon-cache correction defaults to `ON` in fresh configurations. The historical
 option name `LIVEAREA_ICON_CACHE_TRIAL` is retained for build compatibility; pass
 `-DLIVEAREA_ICON_CACHE_TRIAL=OFF` for an explicit limits/recovery-only build.
-Logging is controlled separately. `LIVEAREA_ICON_CACHE_LOGGING` and the broader
-`LIVEAREA_DEBUG_LOGGING` both default to `OFF`. Logless builds do not open,
+Logging is controlled separately. `LIVEAREA_DEBUG_LOGGING` defaults to `OFF`;
+`LIVEAREA_ICON_CACHE_LOGGING` is a compatibility alias that enables the same
+unified logger when set to `ON`. Both are `OFF` in the release. Logless builds do not open,
 truncate, write, delete, or rotate a diagnostic file, even on validation failure;
 an existing log from an older build is left untouched.
 
 For recovery or cross-component diagnostics, enable `LIVEAREA_DEBUG_LOGGING` and
 set a recognizable `LIVEAREA_DEBUG_BUILD_ID`. The older v1.3.0 asset has startup
-diagnostics enabled and remains unchanged; the v1.4.0 through v1.8.0 regular
+diagnostics enabled and remains unchanged; the v1.4.0 through v1.9.0 regular
 release assets disable all runtime logging. See [the changelog](CHANGELOG.md).
 
 Host startup and rollback tests can be run with `python3 tests/run.py`.

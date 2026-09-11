@@ -1,11 +1,14 @@
 # Testing v1.8.0-rc1 and collecting diagnostics
 
-The regular [v1.8.0 release](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.8.0)
-has logging disabled and supports 4,000 counted icons. This guide is for existing
-rc1 test requests; its diagnostic assets still use a 1,000 counted-icon limit.
-If your layout exceeds that limit, request a matching diagnostic build in your
-issue before switching to rc1. Logs left by an older build do not describe a
-subsequent no-logs v1.8.0 session.
+The regular [v1.9.0 release](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.9.0)
+has logging disabled and supports 4,000 counted icons. For a v1.9.0 issue, request
+a matching diagnostic built from that version: v1.8.0 and rc1 diagnostics use a
+different cache implementation. Logs left by an older build do not describe a
+later no-logs session.
+
+The rest of this guide documents existing rc1 test requests. Its diagnostic
+assets retain the older 1,000 counted-icon limit. If your layout exceeds that
+limit, request a matching diagnostic in your issue before switching builds.
 
 This prerelease keeps 50 pages, 500 top-level icons, 1,000 counted application/content
 icons, hidden-application recovery, and the icon-cache correction. It changes the

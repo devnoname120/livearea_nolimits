@@ -1,3 +1,5 @@
+/* Historical shared-PAF implementation, retained for regression comparisons.
+ * Production builds use instance_cache.c; this file is not a CMake source. */
 #include "icon_cache_trial.h"
 
 #ifndef LIVEAREA_ICON_CACHE_LOGGING

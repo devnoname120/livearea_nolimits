@@ -1,5 +1,10 @@
 # Retail 3.60 icon-cache implementation history
 
+> Historical v1.3-v1.8 implementation. Current releases use the
+> [per-instance cache implementation](instance-cache.md); the shared PAF hook
+> installation described below is no longer part of the production build.
+
+
 This file preserves the original retail 3.60 investigation and device trials.
 As of v1.5.0, the same correction is enabled by default for retail 3.60, retail
 3.65, and PTEL 3.60 using validated profiles. Current compatibility, tests, and

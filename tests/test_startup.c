@@ -52,7 +52,7 @@ static int g_trial_failure;
 static int g_trial_live;
 static unsigned int g_trial_calls;
 
-int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
+int instance_cache_start(SceUID shell_modid, uint32_t shell_nid,
 	const SceKernelModuleInfo *info)
 {
 	assert(shell_modid == 42);
@@ -65,13 +65,7 @@ int icon_cache_trial_start(SceUID shell_modid, uint32_t shell_nid,
 	return 0;
 }
 
-void icon_cache_trial_stop(void)
-{
-	/* Remove the PAF hook before rolling back the shell patches. */
-	if (g_trial_live)
-		assert(g_live_injections == ARRAY_SIZE(patches_360));
-	g_trial_live = 0;
-}
+int instance_cache_can_unload(void) { return !g_trial_live; }
 #endif
 static struct {
 	uint32_t offset;
@@ -193,6 +187,12 @@ static void test_profile(const PatchProfile *profile)
 	assert(module_stop(0, NULL) != SCE_KERNEL_STOP_SUCCESS);
 	assert(g_live_injections == ARRAY_SIZE(patches_360) && g_recovery_live);
 	g_recovery_busy = 0;
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_CANCEL);
+	assert(g_recovery_live && g_live_injections == ARRAY_SIZE(patches_360));
+	/* Harness-only teardown to model a later boot with no live instances. */
+	g_trial_live = 0;
+#endif
 	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);
 #if LIVEAREA_DEBUG_LOGGING
 	assert(test_debug_capture_contains("[main] module-stop success"));
@@ -206,6 +206,10 @@ static void test_profile(const PatchProfile *profile)
 	assert(module_start(0, NULL) == SCE_KERNEL_START_SUCCESS);
 	assert(g_recovery_calls == 1 && !g_recovery_live);
 	assert(g_live_injections == ARRAY_SIZE(patches_360));
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_CANCEL);
+	g_trial_live = 0;
+#endif
 	assert(module_stop(0, NULL) == SCE_KERNEL_STOP_SUCCESS);
 	assert(memcmp(g_text, original, profile->text_size) == 0);
 

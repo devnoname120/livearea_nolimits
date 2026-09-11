@@ -10,11 +10,11 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(livearea_nolimits VERSION 1.8.0 LANGUAGES C ASM)
+project(livearea_nolimits VERSION 1.9.0 LANGUAGES C ASM)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 option(LIVEAREA_ICON_CACHE_TRIAL
-	"Enable icon-cache eviction and reload correction on supported firmware" ON)
+	"Enable per-instance icon-cache eviction and reload correction" ON)
 option(LIVEAREA_ICON_CACHE_LOGGING
 	"Enable icon-cache startup diagnostics" OFF)
 option(LIVEAREA_DEBUG_LOGGING
@@ -23,6 +23,10 @@ set(LIVEAREA_DEBUG_BUILD_ID "local" CACHE STRING
 	"Identifier written to comprehensive diagnostic logs")
 set(LIVEAREA_DEBUG_SYNC_INTERVAL "1" CACHE STRING
 	"Number of diagnostic log lines written between storage synchronizations")
+if(LIVEAREA_ICON_CACHE_LOGGING)
+	# Preserve the old logging switch as an alias for the unified logger.
+	set(LIVEAREA_DEBUG_LOGGING ON)
+endif()
 
 add_executable(livearea_nolimits
 	src/main.c
@@ -31,11 +35,10 @@ add_executable(livearea_nolimits
 )
 
 if(LIVEAREA_ICON_CACHE_TRIAL)
-	target_sources(livearea_nolimits PRIVATE src/icon_cache_trial.c)
+	target_sources(livearea_nolimits PRIVATE src/instance_cache.c
+		src/instance_cache_entry.S src/shell_detour.c)
 	target_compile_definitions(livearea_nolimits PRIVATE LIVEAREA_ICON_CACHE_TRIAL=1)
-	if(LIVEAREA_ICON_CACHE_LOGGING)
-		target_compile_definitions(livearea_nolimits PRIVATE LIVEAREA_ICON_CACHE_LOGGING=1)
-	endif()
+	target_link_libraries(livearea_nolimits SceKernelThreadMgr_stub)
 endif()
 
 if(LIVEAREA_DEBUG_LOGGING)

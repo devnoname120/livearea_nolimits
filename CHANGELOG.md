@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.9.0 - 2026-09-12
+
+- Replace shared PAF cache/consumer hooks with private virtual tables on
+  SceShell-owned icon-pool and image instances. Other processes retain native
+  PAF code; no additional kernel plugin is required.
+- Keep persistent image handles and single-victim LRU eviction. On allocation
+  failure, release one eligible oldest texture and retry before selecting another.
+- Keep missing artwork pending and retain a texture reference until native
+  widget binding finishes. Clean up instance records on native destruction and
+  refuse hot unload while detours or instances remain live.
+- Use checked four-byte SceShell detours with explicit PUSH replay, including the
+  five-argument image-request ABI. Validate retail 3.60, retail 3.65 and PTEL 3.60
+  firmware profiles. Shared PAF executable code and tables are not patched.
+- Build in Release mode with runtime logging disabled. Retain 50 pages, 500
+  top-level icons, 4,000 counted icons and the existing recovery implementation.
+
+A diagnostic build of this cache policy completed boot and scripted scrolling,
+allocation pressure and reload tests on retail 3.60. Temporary white placeholders
+still appear in the fastest cold/evicted-page pass and recover. The exact logless
+release artifact has offline ARM/build validation; it was not installed for that
+physical test. Retail 3.65 and PTEL cache validation is offline. The hidden-app
+recovery issues #8 and #10 remain unresolved.
+
 ## 1.8.0 - 2026-09-10
 
 - Publish the recovery interception fix from rc1 in the regular release: replace

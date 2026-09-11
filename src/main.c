@@ -7,7 +7,7 @@
 #include "limits.h"
 #include "recovery.h"
 #ifdef LIVEAREA_ICON_CACHE_TRIAL
-#include "icon_cache_trial.h"
+#include "instance_cache.h"
 #endif
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
@@ -202,11 +202,8 @@ static void release_patches(void)
 
 	debug_logf("shell", "release-begin shell_modid=%d", shell_module_id);
 
-#ifdef LIVEAREA_ICON_CACHE_TRIAL
-	debug_logf("main", "cache-stop begin");
-	icon_cache_trial_stop();
-	debug_logf("main", "cache-stop complete");
-#endif
+	/* Instance callbacks cannot be hot-unloaded. module_stop checks their
+	 * lifetime before reaching this cleanup; startup rollback precedes them. */
 
 	for (index = (int)ARRAY_SIZE(patch_uids) - 1; index >= 0; --index) {
 		if (patch_uids[index] >= 0) {
@@ -342,10 +339,9 @@ static int install_patches(void)
 	}
 
 #ifdef LIVEAREA_ICON_CACHE_TRIAL
-	/* Saved layouts can depend on these limit patches. The optional trial
-	 * logs failures and cleans up its own hook; never drop the working
-	 * page/count patches just because the experimental hook is unavailable. */
-	optional_result = icon_cache_trial_start(tai_info.modid, tai_info.module_nid,
+	/* Saved layouts can depend on the capacity patches. A rejected cache
+	 * profile must not remove those working patches. */
+	optional_result = instance_cache_start(tai_info.modid, tai_info.module_nid,
 		&module_info);
 	debug_logf("main", "cache-start result=%d", optional_result);
 #else
@@ -403,6 +399,14 @@ int module_stop(SceSize argc, const void *args)
 	(void)args;
 	debug_logf("main", "module-stop argc=%u args=0x%08X",
 		(unsigned int)argc, (unsigned int)(uintptr_t)args);
+
+#ifdef LIVEAREA_ICON_CACHE_TRIAL
+	if (!instance_cache_can_unload()) {
+		debug_logf("main", "module-stop cancelled reason=instance-cache-use-reboot");
+		debug_log_flush();
+		return SCE_KERNEL_STOP_CANCEL;
+	}
+#endif
 
 	int result = recovery_stop();
 	debug_logf("main", "recovery-stop result=%d", result);

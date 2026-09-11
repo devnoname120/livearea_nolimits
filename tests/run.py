@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
+subprocess.run([sys.executable, str(root / "tests/run_instance_cache.py")], check=True)
 subprocess.run([sys.executable, str(root / "tests/test_recovery_hook_scope.py")], check=True)
 with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
     work = Path(temporary)
