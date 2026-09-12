@@ -10,7 +10,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(livearea_nolimits VERSION 1.9.0 LANGUAGES C ASM)
+project(livearea_nolimits VERSION 2.0.0 LANGUAGES C ASM)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 option(LIVEAREA_ICON_CACHE_TRIAL
@@ -32,13 +32,13 @@ add_executable(livearea_nolimits
 	src/main.c
 	src/recovery.c
 	src/patch_bytes.S
+	src/shell_detour.c
 )
 
 if(LIVEAREA_ICON_CACHE_TRIAL)
 	target_sources(livearea_nolimits PRIVATE src/instance_cache.c
-		src/instance_cache_entry.S src/shell_detour.c)
+		src/instance_cache_entry.S)
 	target_compile_definitions(livearea_nolimits PRIVATE LIVEAREA_ICON_CACHE_TRIAL=1)
-	target_link_libraries(livearea_nolimits SceKernelThreadMgr_stub)
 endif()
 
 if(LIVEAREA_DEBUG_LOGGING)
@@ -75,6 +75,7 @@ target_include_directories(livearea_nolimits PRIVATE
 target_link_libraries(livearea_nolimits
 	taihen_stub
 	SceKernelModulemgr_stub
+	SceKernelThreadMgr_stub
 	# System imports must precede newlib's application-runtime definitions.
 	SceLibKernel_stub
 	c

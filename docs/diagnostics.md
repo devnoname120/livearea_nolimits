@@ -1,21 +1,15 @@
-# Testing v1.8.0-rc1 and collecting diagnostics
+# Collecting diagnostics
 
-The regular [v1.9.0 release](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.9.0)
-has logging disabled and supports 4,000 counted icons. For a v1.9.0 issue, request
-a matching diagnostic built from that version: v1.8.0 and rc1 diagnostics use a
-different cache implementation. Logs left by an older build do not describe a
-later no-logs session.
+Regular releases have runtime logging disabled. Use a diagnostic ZIP from the
+same [release](https://github.com/devnoname120/livearea_nolimits/releases) as the
+version being investigated. The normal diagnostic enables logging and keeps
+icon-cache management enabled. The no-cache diagnostic disables only icon-cache
+management; use it when requested for a comparison in your issue.
 
-The rest of this guide documents existing rc1 test requests. Its diagnostic
-assets retain the older 1,000 counted-icon limit. If your layout exceeds that
-limit, request a matching diagnostic in your issue before switching builds.
-
-This prerelease keeps 50 pages, 500 top-level icons, 1,000 counted application/content
-icons, hidden-application recovery, and the icon-cache correction. It changes the
-recovery interception and enables logging so failures can be investigated.
-Some reporters have confirmed improvements, but hidden-app recovery and the
-remaining hangs still need investigation. Please test the operation requested
-in your issue and report results there, including successful results.
+Both diagnostic variants retain the release's application and page limits and
+hidden-application recovery. Logs left by another build do not describe a later
+session with logging disabled. Keep the matching build ID, SUPRX and symbols
+when investigating a failure.
 
 ## Install and test
 
@@ -23,17 +17,18 @@ in your issue and report results there, including successful results.
    `ur0:shell/db/app.db` before replacing anything.
 2. Extract `livearea_nolimits.suprx` from the diagnostic ZIP and replace the file
    referenced under `*main`. Keep other plugins and the theme unchanged for the
-   first test. Fully reboot; standby does not load the replacement.
+   comparison. Fully reboot; standby does not load the replacement.
 3. Perform the focused test requested in your issue. For a freeze or crash,
    record which operation failed, the error code if shown, and roughly how long
-   after boot it occurred. Avoid repeatedly provoking the same failure.
+   after boot it occurred. One failed attempt is enough.
 4. Copy the logs below before another normal boot. Each boot rotates the current
    log to the previous log. Send both if present, even when the test succeeds.
 
-An expanded database may require the expanded-limit plugin to boot. Holding L
-only skips plugins; it does not make that database compatible with stock limits.
-For rollback, use a compatible plugin/database backup pair and your existing
-recovery access. A database rebuild is not a prerequisite for this test.
+Keep a restored layout. Do not rebuild the database or deliberately hide apps
+just to reproduce recovery. An expanded database may require the expanded-limit
+plugin to boot. Holding L skips plugins but does not make that database compatible
+with the firmware's normal limits. For rollback, use a compatible plugin/database
+backup pair and your existing recovery access.
 
 ## Files to attach
 
@@ -46,40 +41,43 @@ If they are absent, check the same filenames under `ux0:/data/`. Say explicitly
 if neither location contains logs; that can mean the plugin did not load or
 neither log destination could be opened.
 
-Include the actual firmware version, Vita/PSTV model, Enso version, previous
-plugin version, and the operation/results. If a crash produced a new
-`psp2core-*` dump, attach it as well if you are comfortable sharing it publicly;
-core dumps can contain application data. A photo of an error is useful when
-screenshot capture itself fails. Configuration and database files may be
-requested separately when the logs point to installation or hidden-app state.
+Include the actual firmware version, Vita/PSTV model, Enso version, plugin build
+ID, and the operation/results. If a crash produced a completed `psp2core-*` dump,
+attach it as well if you are comfortable sharing it publicly; core dumps can
+contain application data. Configuration and database files may be requested
+separately when logs point to installation or hidden-app state.
 
 ## What the log establishes
 
-The first line identifies `build=v1.8.0-rc1`, the selected log path, and the sync
-interval. Lines include a sequence number, monotonic process time, and thread ID.
-Startup records shell/PAF/recovery identities, memory ranges, limits, validation
-results, and hook addresses. Recovery records each injection, the ready callback,
-its native entry/return, and patch removal during module stop. Mismatches include
-the expected and actual bytes. Cache activity is sampled and includes counters.
+The first line identifies the build, selected log path and synchronization
+interval. Lines include a sequence number, monotonic process time and thread ID.
+Startup records firmware identities, memory ranges, configured limits and
+validation results. Recovery records module preload, patching before
+initialization, initializer entry/return, the original completion callback and
+patch removal during module stop. Cache activity is sampled and includes counters.
 
-`ready-hook` means installation succeeded. `ready-enter` means the callback ran.
-`module-patched` means all recovery patches were installed. Native entry/return
-and module-stop events show how far execution progressed; the restored app count
-must still be confirmed by the reporter. A negative installation result with
-`run_native=1 patched=0` means native recovery continued without the extension.
+`load-call-installed` means the SceShell interception was installed;
+`preload-prepared patched=1 before-initializer=1` records early patching.
+`init-return flags=0x00080000` indicates the hidden-app recovery decision for the
+validated normal-boot cases. Native callback and module-stop events show how far
+execution progressed. These events do not count restored apps: report the
+visible layout and whether it persists after reboot as well.
 
-The logger synchronizes every eight lines and explicitly flushes at recovery
-boundaries. It avoids waiting on a contended logging lock; a subsequent line
-reports `dropped=` if contention lost events. Short writes are completed where
-possible, and later lines report `write_failures=` after storage errors. A hard
-failure can still lose the last unsynchronized lines. Logging adds overhead, so
-this candidate is for diagnosis, not a performance benchmark.
+The cache's `shell-detours-installed` event precedes `active`; only the latter
+confirms that the private pool/image interception is active. `paf_hooks=0` and
+`text_unchanged=1` record that shared PAF executable code was left untouched.
 
-## Reproduce the diagnostic build
+Diagnostic builds synchronize each line by default and explicitly flush at
+recovery boundaries. Logging avoids waiting on a contended lock; a subsequent
+line reports `dropped=` if contention lost events. Short writes are completed
+where possible, and later lines report `write_failures=` after storage errors.
+Logging adds overhead, so use the regular SUPRX for ordinary use once the
+investigation is complete.
 
-Use the SDK image described in the README and the `v1.8.0-rc1` source tag to
-reproduce the existing diagnostic. Current main has different capacity limits;
-use a distinct build ID when making a diagnostic from newer source. Configure with:
+## Build a matching diagnostic
+
+Check out the source tag for the release being investigated. Use the SDK image
+described in the README and a distinct build ID. Configure with:
 
 ```sh
 cmake -S . -B build/diagnostic -G Ninja \
@@ -87,12 +85,13 @@ cmake -S . -B build/diagnostic -G Ninja \
   -DLIVEAREA_ICON_CACHE_TRIAL=ON \
   -DLIVEAREA_ICON_CACHE_LOGGING=OFF \
   -DLIVEAREA_DEBUG_LOGGING=ON \
-  -DLIVEAREA_DEBUG_BUILD_ID=v1.8.0-rc1 \
-  -DLIVEAREA_DEBUG_SYNC_INTERVAL=8
+  -DLIVEAREA_DEBUG_BUILD_ID=local-diagnostic \
+  -DLIVEAREA_DEBUG_SYNC_INTERVAL=1
 cmake --build build/diagnostic
 ```
 
-The target retains `-O2`; `RelWithDebInfo` also preserves symbols in the local ELF.
-The release's symbols archive contains only this project's ELF and symbol map,
-not firmware images or user data. Keep the ELF matching the SUPRX hash when
-analyzing core dumps.
+Set `LIVEAREA_ICON_CACHE_TRIAL=OFF` for the no-cache comparison. The target uses
+`-O2`; `RelWithDebInfo` also preserves symbols in the local ELF. The symbols
+archive contains this project's binaries and symbol maps, with a separate folder
+for each build variant. It contains no firmware images or user data. Use the
+ELF whose recorded SUPRX hash matches the installed diagnostic.

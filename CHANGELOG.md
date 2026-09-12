@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.0.0 - 2026-09-12
+
+- Apply hidden-application recovery limits before native initialization, using
+  the SceShell recovery-load call and PAF's module cache. Remove the late
+  recovery-ready entry hook and balance the preload reference after completion.
+- Retain SceShell-owned icon-cache management, 50 pages, 500 top-level icons and
+  4,000 application/content icons. Shared PAF/SceLibKernel code is untouched.
+- Publish the regular SUPRX with runtime logging disabled, plus matching optional
+  diagnostic builds and symbols for follow-up reports. Set the module version to 2.0.
+
+The retail 3.65 reporter in [#10](https://github.com/devnoname120/livearea_nolimits/issues/10#issuecomment-5642660836)
+confirmed that the cache-enabled candidate restored 73 hidden applications to a
+573-application, 15-page layout and preserved it after reboot. Its logs confirm
+patching before initialization, the recovery decision and clean module shutdown.
+The retail 3.60 reporter in [#8](https://github.com/devnoname120/livearea_nolimits/issues/8#issuecomment-5642650846)
+reported restored icons, repeated successful reboots and working games/homebrew
+after the no-cache candidate request; logs and the cache-enabled comparison are
+pending. These hardware results used diagnostic candidates. The regular release
+artifact has offline build/ARM validation; PTEL validation remains offline.
+
+## 1.9.1-rc1 - 2026-09-12
+
+- Fix hidden-app recovery patch timing: preload the recovery module at the
+  SceShell recovery-load call and patch it before PAF Plugin initialization.
+- Reuse the native PAF module cache and balance the extra module reference after
+  load completion, including failed and duplicate loads. Remove the later
+  recovery-ready entry hook and call its original void callback directly.
+- Keep interception process-local. No shared PAF/SceLibKernel code hooks and no
+  private controller recovery are introduced. Capacity/cache behavior is unchanged.
+- Add diagnostic initializer, preload, completion and cleanup events. Publish
+  logging-enabled normal and no-cache comparisons for reporters.
+
+Offline ARM tests reproduce the correct restoration decision for both reporters
+(500 visible plus 49/73 hidden). They do not prove that issue #8’s boot freeze is
+resolved or that the real database/UI recovered; hardware confirmation is pending.
+
 ## 1.9.0 - 2026-09-12
 
 - Replace shared PAF cache/consumer hooks with private virtual tables on

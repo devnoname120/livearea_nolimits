@@ -61,8 +61,9 @@ single configuration entry for the plugin.
 - Icon-cache management is limited to LiveArea; other applications keep their
   normal caching behavior.
 - Pages after the first ten use the firmware's default page appearance.
-- Applications already hidden by the firmware may remain hidden. See the
-  [recovery notes](docs/recovery.md) for the recovery mechanism and its limitations.
+- Boot recovery can restore applications hidden by the firmware's application
+  limit when application and page capacity are available. See the
+  [recovery notes](docs/recovery.md) for details and limitations.
 - Regular release builds have runtime logging disabled.
 
 ### Disabling or removing the plugin

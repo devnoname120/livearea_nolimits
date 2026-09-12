@@ -7,23 +7,25 @@ icon-cache correction. It extends the existing `SceDbRecovery` algorithm; it doe
 not rebuild `app.db`, reinstall applications, suppress the warning, or introduce
 a second database implementation. Runtime logging remains disabled by default.
 
-Version 1.8.0-rc1 replaces the shared-library lifecycle hooks with a
-SceShell-local recovery-ready callback and a temporary redirect of the loaded
-recovery module's stop entry. It retains the seven capacity patches. The
-prerelease has diagnostic logging enabled; ordinary source builds still default
-to logging disabled. See [reporter diagnostics](diagnostics.md).
+Version 2.0.0 fixes the initialization-order regression in v1.8.0 and v1.9.0. It preloads `SceDbRecovery` at SceShell's specific recovery-load call,
+installs the seven capacity patches after module start/relocation but before PAF
+constructs and initializes the Plugin, and then resumes normal asynchronous loading.
+The later SceShell ready callback is called directly, with its correct void ABI.
+Its entry is no longer hooked and no substitute continuation is involved.
 
-The current callback implementation is a candidate for reporter testing.
-Offline checks cover host lifecycle behavior with firmware bytes, native ARM
-capacity/planning instructions, and hook relocation. The earlier retail 3.65
-500-visible/73-hidden hardware result belongs to v1.7.0's previous interception
-path and is not hardware validation of v1.8.0-rc1. The candidate still needs
-confirmation of real hidden-app recovery, application launch, and sleep/wake.
+Offline tests reproduce both supplied 500-visible/49-hidden and
+500-visible/73-hidden recovery decisions and validate module-reference/patch
+cleanup. The retail 3.65 reporter confirmed restoration and a successful second
+boot with the cache-enabled diagnostic candidate; its logs establish early
+patching and clean module shutdown. The retail 3.60 reporter reported restored
+icons, repeated successful reboots and working applications after the no-cache
+candidate request. See the hardware coverage below for the evidence and its limits.
 
-Version 1.7.0 removed the unsafe allocator-entry hook but retained lifecycle
-hooks in shared `SceLibKernel`. Issue #6's VitaShell dumps subsequently identified
-branches into SceShell-only plugin code from another process. The preceding
-allocator problem and its historical tests are documented below.
+The earlier shared-library hooks in v1.7.0 applied limits early enough but exposed
+other processes to SceShell-only callbacks. v1.8.0 removed those hooks, but its
+replacement ran after the initializer had stored its recovery decision. Late
+patching cannot update that decision. The historical allocator-hook problem is
+documented below; neither form of shared hook is restored here.
 
 ## Why installation order matters
 
@@ -133,41 +135,64 @@ assets.
 
 ## Module lifecycle
 
-No module-manager import in `SceLibKernel`, `ScePaf`, or another shared library
-is hooked. The plugin validates SceShell's identity, text size, and the 12-byte
-entry sequence at segment-0 offset `0x1BFE`, then hooks that shell-local callback.
-Each of the three supported shell profiles has its own expected bytes.
+The only permanent recovery interception is a four-byte `BL` replacement at
+SceShell text offset `0xC1E`. Startup validates the complete surrounding 16-byte
+call sequence, including the relocated local finish-callback address and original
+call instruction. Other PAF plugin-load calls are not intercepted. The wrapper
+also checks the exact plugin name, module filename, interface version, option and
+finish callback before taking ownership.
 
-In the inspected retail 3.65 image, SceDbRecovery's module_start runs static
-constructors and registers PAF interface 1. SceShell's callback obtains that
-interface and invokes its initialization entry at interface offset +4. The new
-hook installs the recovery capacity patches before continuing to that native
-callback, after the recovery module has started and relocation has completed.
-This timing avoids the old allocator relocation collision. Actual affected-device
-recovery through this callback remains a reporter acceptance test.
+| Shell | Original LoadAsync import offset | Original BLX bytes |
+| --- | --- | --- |
+| Retail 3.60 | `0x45CA50` | `5B F0 18 E7` |
+| Retail 3.65 | `0x45CE98` | `5C F0 3C E1` |
+| PTEL 3.60 | `0x452C08` | `51 F0 F4 E7` |
 
-The hook validates the loaded recovery module identity, both segment sizes, all
-seven original patch instructions, and the complete ten-byte module_stop entry
-at segment-0 offset `0x1E`. Before installing capacity patches, it redirects that
-stop entry to the plugin. The redirect is an unaligned Thumb literal branch;
-o substitute trampoline or pre-start allocator hook is used there.
+The original SceShell import stub is left intact and called normally. PAF Module
+acquire/release/interface helpers are selected by the matched PAF NID and checked
+native instruction sequences. The wrapper mirrors PAF's effective module option,
+including its common-dialog mode bit. It declines an untracked preexisting
+recovery module because initialization timing cannot be established for that state.
 
-When native module stop is requested, the redirect restores the capacity patches
-and the original stop entry while the module is still mapped, then calls the
-original stop with its arguments. The inspected native stop finalizes the module
-runtime and returns success. If cleanup fails, stop is cancelled and the remaining
-patch handles are retained for retry. The plugin refuses its own unload while
-recovery modifications or an active ready callback still depend on its code.
+The preload starts the module and registers its interface; it does not run the
+Plugin initializer. PAF's filename cache lets the subsequent native Plugin load
+reuse that ModuleImpl, taking its own reference. The preload stays alive through
+the original finish callback, then its extra reference is released. Failed
+preloads are released before native LoadAsync retries, so an unsuccessful cached
+ModuleImpl cannot be kept alive by the wrapper. Duplicate pending loads share the
+retained reference until their callbacks complete. Preparing/releasing/blocked
+states reject unsafe reentry. An unexpected owner mismatch retains the preload
+rather than stopping an unverified owner.
 
-Identity or byte mismatches leave recovery unmodified. Partial installation rolls
-back; if rollback fails, the native ready callback is blocked rather than running
-with a partial patch set. None of these optional recovery failures removes the
-already-installed shell capacity patches or the independent icon-cache correction.
+Before modifying the recovery module, validate its UID/NID, both segments, all
+seven original patch sites, module-stop body and relocated five-entry module
+interface. The interface returned by PAF must match that module's data segment.
+This is the Module interface; the Plugin has a separate interface table at object
+`+0x58`, which the native initializer populates for the later SceShell callback.
+The high shared-address window is rejected for recovery code/data. A private
+module-stop redirect restores the temporary patches while the module is
+still mapped, then calls its original stop. No lifecycle mutex is held across
+native module construction/destruction, load requests or client callbacks.
 
-Diagnostic logs distinguish callback installation, callback invocation, unpatched
-fallback, each injection, successful patching, native entry/return, rollback, and
-stop cleanup. `ready-hook` alone does not prove that recovery ran, and a native
-callback return does not prove that all hidden apps were restored.
+Diagnostic builds also redirect the initializer pointer in the private module's
+interface table at data offset `+4`. The observer logs entry/return and the stored
+action flags, then delegates to the original initializer at text `+0x9A`. This
+uses the native callback table, with no executable-entry trampoline. The pointer
+is restored with the other temporary modifications before module stop. It is
+compiled out when logging is disabled.
+
+Partial installation rolls back. If rollback fails, the preload and callback code
+remain retained and Plugin initialization is blocked; a partly patched recovery
+module must not execute. A live call site or retained module prevents hot unload.
+Switch builds by full reboot. These optional recovery errors never remove the
+baseline shell capacity patches or the independent icon-cache correction.
+
+Logs distinguish `preload-enter/return`, successful preparation before the
+initializer, `init-enter/return`, `load-finished`, `finish-native-enter/return`,
+preload release and module-stop cleanup. The initializer's restoration flag is
+`0x80000` for the validated normal-boot test cases with hidden apps and remaining
+capacity. Flags and successful callbacks are not a restored-app count; reporter
+confirmation of the actual resulting layout remains necessary.
 
 ## Repeating offline verification
 
@@ -191,9 +216,9 @@ python3 tests/run.py \
 ```
 
 The substitute checkout must be at the revision documented in the icon-cache
-notes. Its relocator tests cover the remaining shell and PAF function hooks; the
-recovery callback and its stop redirect are checked separately against the
-selected firmware bytes and the pinned hook engine.
+notes. Its relocator tests are historical cache-policy comparisons. Current cache and
+recovery code do not install shared PAF or SceLibKernel entry hooks. Current recovery
+call dispatch and its stop redirect are checked with compiled ARM code.
 
 Host tests use placeholder replacement bytes, as the existing shell tests do.
 The separate optional instruction test requires Unicorn 2.x and an unstripped
@@ -228,12 +253,26 @@ shell and recovery verification against the final assembled plugin.
 
 ## Hardware coverage and rollback
 
-**Historical v1.7.0 evidence:** retail 3.65 recovery was tested at 500 visible plus 73
-hidden applications. The database update completed, all 73 applications appeared
-across 15 pages, and the recovery module stopped and rolled back its temporary
-patches cleanly. Equivalent affected-library recovery remains untested on retail
-3.60 and PTEL 3.60 hardware. The v1.8.0-rc1 callback implementation requires new
-reporter confirmation on affected devices; these older results do not carry over.
+The v1.9.1-rc1 diagnostic candidate exercises the recovery implementation included
+in v2.0.0:
+
+- **Retail 3.65, cache enabled:** the [#10 reporter](https://github.com/devnoname120/livearea_nolimits/issues/10#issuecomment-5642660836)
+  observed 500 visible/73 hidden applications become 573 visible across 15 pages.
+  A second reboot preserved that layout. Both logs identify the candidate and
+  4,000-icon limit. The first records all seven patches before initialization,
+  action flag `0x80000`, native callback return and successful patch/stop cleanup.
+  The second records normal startup without a recovery load; its previous log
+  is byte-identical to the first boot's log.
+- **Retail 3.60:** the [#8 reporter](https://github.com/devnoname120/livearea_nolimits/issues/8#issuecomment-5642650846)
+  reported that hidden icons returned, several reboots no longer froze, and
+  games/homebrew/ports launched normally after the no-cache candidate request.
+  Exact build confirmation from logs and the cache-enabled comparison remain
+  pending. The reply does not give an exact restored-app count.
+- **PTEL 3.60:** validation is offline only.
+
+The application counts and visible layout are reporter observations; the logs
+establish the recorded execution order and cleanup. These reports do not test
+all capacity boundaries or the exact logless v2.0.0 artifact on hardware.
 
 Keep backups of the active plugin, configuration, and a stock-compatible layout
 database. Disabling the plugin does not shrink an already-expanded `app.db`; a
@@ -245,3 +284,21 @@ plugin, or use Safe Mode database rebuild as the destructive fallback.
 At the real configured counted-icon or top-level capacity, applications can still
 remain hidden. A persistent warning at those boundaries is not the old 500-limit
 bug, and this extension intentionally does not hide it.
+
+## Recovery candidate instruction test
+
+`tests/test_recovery_preload_arm.py PLUGIN_ELF EVIDENCE_ROOT` executes the compiled
+call-site wrapper, native PAF Module acquire/reuse/release code and interface-copy
+sequence, initializer observer and original SceShell ready callback. The native
+recovery initializer and completion-registration routine run in a separate Unicorn
+context using the exact capacity bytes installed by the compiled wrapper. This
+avoids overlapping link-address spaces while preserving the tested patch timing.
+OS, strings/maps, asynchronous scheduling, environment lookup and UI services are
+modeled. Passing this test is not a full-system boot test.
+
+The evidence root is the main checkout's local `build/` directory containing the
+private firmware inputs used by the existing profile tests. `--database` can be
+repeated to derive visible/hidden counts from supplied read-only database copies.
+Both reporter count cases are included by default. Failure cases cover start or
+interface failure, individual patch/observer failures, incomplete rollback and
+failed Plugin load, as well as successful cleanup without retained ModuleImpls.

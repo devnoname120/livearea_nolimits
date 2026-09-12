@@ -1,4 +1,7 @@
 #include <psp2/kernel/modulemgr.h>
+#include <psp2/kernel/threadmgr/lw_mutex.h>
+#include <stddef.h>
+#include <stdatomic.h>
 #include <psp2/types.h>
 #include <stdint.h>
 #include <string.h>
@@ -6,6 +9,7 @@
 
 #include "debug_log.h"
 #include "recovery.h"
+#include "shell_detour.h"
 
 #define RECOVERY_TEXT_SIZE 0x3E9E8U
 #define RECOVERY_DATA_SIZE 0x3094U
@@ -13,6 +17,9 @@
 #define RECOVERY_ERROR (-1)
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 #define SHELL_RECOVERY_READY_OFFSET 0x1BFEU
+#define SHELL_RECOVERY_LOAD_CALL_OFFSET 0xC1EU
+#define RECOVERY_INITIALIZER_OFFSET 0x9AU
+#define RECOVERY_ACTION_FLAGS_OFFSET 0x1100U
 
 extern const uint8_t patch_cmp_r0_icon_limit[4];
 extern const uint8_t patch_rsbs_r1_r0_icon_limit[4];
@@ -27,11 +34,35 @@ typedef struct {
 } RecoveryPatch;
 
 typedef struct {
-	uint32_t shell_nid;
-	uint32_t recovery_nid;
-	uint32_t shell_text_size;
-	uint8_t ready_prefix[12];
+	uint32_t shell_nid, recovery_nid, shell_text_size, paf_nid, load_import;
+	uint8_t load_call[4];
 } RecoveryProfile;
+
+/* PAF's native Module wrapper is a single owning ModuleImpl pointer. */
+typedef struct {
+	uint32_t name[3];
+	SceUID handle;
+	uint32_t interfaces[3];
+	int32_t references, option, result;
+} PafModuleImpl;
+typedef struct { PafModuleImpl *impl; } PafModule;
+typedef struct { const char *data; uint32_t length, capacity; } PafString;
+typedef struct {
+	PafString name, caller;
+	uintptr_t functions[5];
+	uint8_t middle[60];
+	PafString module_file;
+	int32_t module_interface_version, module_option;
+} PafLoadParam;
+typedef void (*LoadFinish)(void *plugin);
+typedef void (*LoadAsync)(const PafLoadParam *, LoadFinish, int);
+#if UINTPTR_MAX == UINT32_MAX
+_Static_assert(sizeof(PafModule)==4 && sizeof(PafString)==12, "PAF wrapper ABI");
+_Static_assert(offsetof(PafModuleImpl,handle)==12 && offsetof(PafModuleImpl,references)==28 &&
+	offsetof(PafModuleImpl,result)==36, "PAF ModuleImpl ABI");
+_Static_assert(offsetof(PafLoadParam,module_file)==104 &&
+	offsetof(PafLoadParam,module_option)==120, "PAF InitParam ABI");
+#endif
 
 typedef int (*RecoveryStop)(SceSize args, const void *argp);
 
@@ -46,21 +77,9 @@ static const RecoveryPatch recovery_patches[] = {
 };
 
 static const RecoveryProfile recovery_profiles[] = {
-	{
-		0x0552F692U, 0xC1F30F67U, 0x541B74U,
-		{0x10, 0xB5, 0x01, 0x21, 0x5A, 0xF0, 0x1E, 0xE6,
-		 0x04, 0x1C, 0x0D, 0xD0},
-	},
-	{
-		0x5549BF1FU, 0x3F76E38FU, 0x5420F4U,
-		{0x10, 0xB5, 0x01, 0x21, 0x5B, 0xF0, 0x42, 0xE0,
-		 0x04, 0x1C, 0x0D, 0xD0},
-	},
-	{
-		0xEAB89D5CU, 0xC1F30F67U, 0x535CF4U,
-		{0x10, 0xB5, 0x01, 0x21, 0x50, 0xF0, 0xFA, 0xE6,
-		 0x04, 0x1C, 0x0D, 0xD0},
-	},
+	{0x0552F692U,0xC1F30F67U,0x541B74U,0xCD679177U,0x45CA50U,{0x5B,0xF0,0x18,0xE7}},
+	{0x5549BF1FU,0x3F76E38FU,0x5420F4U,0x73F90499U,0x45CE98U,{0x5C,0xF0,0x3C,0xE1}},
+	{0xEAB89D5CU,0xC1F30F67U,0x535CF4U,0xCD679177U,0x452C08U,{0x51,0xF0,0xF4,0xE7}},
 };
 
 static const uint8_t expected_stop_entry[] = {
@@ -71,30 +90,41 @@ static const uint8_t stop_redirect_prefix[] = {
 };
 
 static const RecoveryProfile *active_profile;
-static SceUID ready_hook_id = -1;
-static tai_hook_ref_t ready_hook_ref;
-static SceUID stop_redirect_id = -1;
-static SceUID recovery_modid = -1;
+static SceUID load_call_id = -1, stop_redirect_id = -1, init_observer_id = -1;
+static atomic_int recovery_modid = -1;
 static RecoveryStop native_stop;
+static void (*native_init)(void *);
+static const uint32_t *action_flags;
 static SceUID patch_ids[ARRAY_COUNT(recovery_patches)];
-static volatile int lifecycle_busy;
-static int recovery_install_complete;
-static int initialized;
-static volatile unsigned int ready_in_flight;
+static int recovery_install_complete, initialized;
+static SceKernelLwMutexWork lifecycle_mutex;
+static atomic_uint load_in_flight, finish_in_flight, init_in_flight, stop_in_flight;
+static unsigned int pending_loads;
+enum { PRELOAD_IDLE, PRELOAD_PREPARING, PRELOAD_WAITING,
+	PRELOAD_RELEASING, PRELOAD_BLOCKED };
+static atomic_int preload_phase;
+static PafModule preload;
+static PafModule *(*module_acquire)(PafModule *, const char *, const char *, int, const void *);
+static PafModule *(*module_release)(PafModule *);
+static void *(*module_get_interface)(PafModule *,int);
+static void **framework_slot;
+static LoadAsync original_load;
+static LoadFinish original_finish;
 
 _Static_assert((RECOVERY_STOP_OFFSET & 3U) == 2U,
 	"stop redirect literal requires a halfword-aligned entry");
 _Static_assert(sizeof(stop_redirect_prefix) + sizeof(uint32_t) ==
 	sizeof(expected_stop_entry), "stop redirect must replace the complete entry");
 
+/* Never hold this mutex across a PAF constructor/destructor, load request or
+ * client callback. These may run callbacks or wait for another thread. */
 static int enter_lifecycle(void)
 {
-	return __sync_bool_compare_and_swap(&lifecycle_busy, 0, 1);
+	return sceKernelLockLwMutex(&lifecycle_mutex,1,NULL)>=0;
 }
-
 static void leave_lifecycle(void)
 {
-	__sync_lock_release(&lifecycle_busy);
+	sceKernelUnlockLwMutex(&lifecycle_mutex,1);
 }
 
 static void clear_patch_ids(void)
@@ -118,7 +148,23 @@ static int verify_recovery(const SceKernelModuleInfo *info)
 			RECOVERY_TEXT_SIZE, RECOVERY_DATA_SIZE);
 		return RECOVERY_ERROR;
 	}
+#if UINTPTR_MAX == UINT32_MAX
+	if((uintptr_t)info->segments[0].vaddr>=0xE0000000U ||
+		(uintptr_t)info->segments[1].vaddr>=0xE0000000U) {
+		debug_logf("recovery","validation-failed reason=shared-range-module");
+		return RECOVERY_ERROR;
+	}
+#endif
 	text = info->segments[0].vaddr;
+	static const uint32_t methods[] = {0x99,0x9B,0x15F,0x167,0x207};
+	for (unsigned int i=0;i<ARRAY_COUNT(methods);++i) {
+		uint32_t pointer;
+		memcpy(&pointer,(uint8_t *)info->segments[1].vaddr+i*4,4);
+		if (pointer!=(uint32_t)((uintptr_t)text+methods[i])) {
+			debug_logf("recovery","validation-failed reason=module-interface slot=%u",i);
+			return RECOVERY_ERROR;
+		}
+	}
 	if (memcmp(text + RECOVERY_STOP_OFFSET, expected_stop_entry,
 			sizeof(expected_stop_entry)) != 0) {
 		debug_logf("recovery", "validation-failed reason=stop-entry");
@@ -150,6 +196,12 @@ static int release_recovery_patches(void)
 {
 	int first_error = 0;
 	int index;
+	if (init_observer_id>=0) {
+		int result=taiInjectRelease(init_observer_id);
+		debug_logf("recovery","init-observer-release uid=%d result=%d",init_observer_id,result);
+		if (result>=0) init_observer_id=-1;
+		else first_error=result;
+	}
 
 	for (index = (int)ARRAY_COUNT(patch_ids) - 1; index >= 0; --index) {
 		if (patch_ids[index] >= 0) {
@@ -184,49 +236,43 @@ static void clear_recovery_state(void)
 {
 	recovery_modid = -1;
 	native_stop = NULL;
+	native_init = NULL;
+	action_flags = NULL;
 	recovery_install_complete = 0;
 }
 
-static int recovery_module_stop_redirect(SceSize args, const void *argp)
+static int recovery_module_stop_redirect(SceSize args,const void *argp)
 {
 	RecoveryStop stop;
-	int result;
-
-	debug_logf("recovery", "module-stop enter modid=%d args=%u argp=0x%08X native=0x%08X complete=%d",
-		recovery_modid, (unsigned int)args, (unsigned int)(uintptr_t)argp,
-		(unsigned int)(uintptr_t)native_stop, recovery_install_complete);
+	int result=SCE_KERNEL_STOP_CANCEL;
+	atomic_fetch_add(&stop_in_flight,1);
+	debug_logf("recovery","module-stop enter modid=%d args=%u argp=0x%08X",
+		recovery_modid,(unsigned int)args,(unsigned int)(uintptr_t)argp);
 	debug_log_flush();
-	if (!enter_lifecycle()) {
-		debug_logf("recovery", "module-stop cancelled reason=busy");
-		debug_log_flush();
-		return SCE_KERNEL_STOP_CANCEL;
+	if(!enter_lifecycle()) goto done;
+	if(!native_stop || init_in_flight || stop_in_flight>1) {
+		debug_logf("recovery","module-stop cancelled reason=callback-active-or-native-null");
+		leave_lifecycle();goto done;
 	}
-	if (native_stop == NULL) {
-		debug_logf("recovery", "module-stop cancelled reason=native-stop-null");
-		debug_log_flush();
-		leave_lifecycle();
-		return SCE_KERNEL_STOP_CANCEL;
+	if(release_recovery_patches()<0 || release_stop_redirect()<0) {
+		debug_logf("recovery","module-stop cancelled reason=cleanup-failed");
+		recovery_install_complete=0;preload_phase=PRELOAD_BLOCKED;
+		leave_lifecycle();goto done;
 	}
-	if (release_recovery_patches() < 0 || release_stop_redirect() < 0) {
-		debug_logf("recovery", "module-stop cancelled reason=cleanup-failed modid=%d redirect=%d",
-			recovery_modid, stop_redirect_id);
-		debug_log_flush();
-		leave_lifecycle();
-		return SCE_KERNEL_STOP_CANCEL;
-	}
-	stop = native_stop;
-	clear_recovery_state();
-	debug_logf("recovery", "module-stop native-enter address=0x%08X",
-		(unsigned int)(uintptr_t)stop);
+	stop=native_stop;clear_recovery_state();leave_lifecycle();
+	debug_logf("recovery","module-stop native-enter address=0x%08X",(unsigned int)(uintptr_t)stop);
 	debug_log_flush();
-	result = stop(args, argp);
-	debug_logf("recovery", "module-stop native-return result=%d", result);
-	debug_log_flush();
-	leave_lifecycle();
-	return result;
+	result=stop(args,argp);
+	debug_logf("recovery","module-stop native-return result=%d",result);
+done:
+	debug_log_flush();atomic_fetch_sub(&stop_in_flight,1);return result;
 }
 
-static int install_recovery(void)
+#if LIVEAREA_DEBUG_LOGGING
+static void recovery_init_observer(void *plugin);
+#endif
+
+static int install_recovery(SceUID expected_modid,const void *module_interface)
 {
 	tai_module_info_t module = {0};
 	SceKernelModuleInfo info = {0};
@@ -246,7 +292,8 @@ static int install_recovery(void)
 		result, result < 0 ? -1 : module.modid,
 		result < 0 ? 0U : (unsigned int)module.module_nid,
 		(unsigned int)active_profile->recovery_nid);
-	if (result < 0 || module.module_nid != active_profile->recovery_nid) {
+	if (result < 0 || module.modid != expected_modid ||
+		module.module_nid != active_profile->recovery_nid) {
 		debug_logf("recovery", "install-rejected reason=module-identity");
 		return RECOVERY_ERROR;
 	}
@@ -257,7 +304,7 @@ static int install_recovery(void)
 		(unsigned int)info.segments[0].memsz,
 		(unsigned int)(uintptr_t)info.segments[1].vaddr,
 		(unsigned int)info.segments[1].memsz);
-	if (result < 0 || verify_recovery(&info) < 0)
+	if (result < 0 || module_interface!=info.segments[1].vaddr || verify_recovery(&info) < 0)
 		return RECOVERY_ERROR;
 
 	memcpy(stop_redirect, stop_redirect_prefix, sizeof(stop_redirect_prefix));
@@ -273,6 +320,8 @@ static int install_recovery(void)
 	recovery_modid = module.modid;
 	native_stop = (RecoveryStop)((uintptr_t)info.segments[0].vaddr +
 		RECOVERY_STOP_OFFSET + 1U);
+	native_init=(void *)((uintptr_t)info.segments[0].vaddr+RECOVERY_INITIALIZER_OFFSET+1U);
+	action_flags=(void *)((uint8_t *)info.segments[1].vaddr+RECOVERY_ACTION_FLAGS_OFFSET);
 	clear_patch_ids();
 	for (index = 0; index < ARRAY_COUNT(recovery_patches); ++index) {
 		const RecoveryPatch *patch = &recovery_patches[index];
@@ -282,168 +331,283 @@ static int install_recovery(void)
 		debug_logf("recovery", "patch-injected index=%u offset=0x%08X size=%u uid=%d",
 			index, (unsigned int)patch->offset, patch->size, patch_ids[index]);
 		if (patch_ids[index] < 0) {
-			int release_result;
-
-			result = patch_ids[index];
-			patch_ids[index] = -1;
-			release_result = release_recovery_patches();
-			if (release_result >= 0)
-				release_result = release_stop_redirect();
-			if (release_result >= 0)
-				clear_recovery_state();
-			debug_logf("recovery", "install-rollback injection_result=%d cleanup_result=%d retained_modid=%d",
-				result, release_result, recovery_modid);
-			return result;
+			result=patch_ids[index];patch_ids[index]=-1;goto rollback;
 		}
 	}
+#if LIVEAREA_DEBUG_LOGGING
+	/* Observe the private module's initializer through its existing interface.
+	 * PAF copies this pointer before calling init. No entry trampoline is used. */
+	target=(uint32_t)(uintptr_t)recovery_init_observer|1U;
+	init_observer_id=taiInjectData(module.modid,1,4,&target,4);
+	debug_logf("recovery","init-observer-injected uid=%d",init_observer_id);
+	if (init_observer_id<0) {result=init_observer_id;goto rollback;}
+#endif
+
 	recovery_install_complete = 1;
 	debug_logf("recovery", "module-patched modid=%d stop-redirect=%d",
 		recovery_modid, stop_redirect_id);
 	debug_log_flush();
 	return 0;
+rollback:
+	{
+		int cleanup=release_recovery_patches();
+		if (cleanup>=0) cleanup=release_stop_redirect();
+		if (cleanup>=0) clear_recovery_state();
+		debug_logf("recovery","install-rollback result=%d cleanup=%d retained_modid=%d",
+			result,cleanup,recovery_modid);
+		debug_log_flush();return result;
+	}
 }
 
-static int recovery_ready_hook(void *plugin)
+
+#if LIVEAREA_DEBUG_LOGGING
+static uint32_t read_action_flags(void)
 {
-	int install_result = RECOVERY_ERROR;
-	int run_recovery = 0;
-	int result;
+	uint32_t flags=0;
+	if(enter_lifecycle()) {if(action_flags) flags=*action_flags;leave_lifecycle();}
+	return flags;
+}
 
-	__sync_add_and_fetch(&ready_in_flight, 1);
-	debug_logf("recovery", "ready-enter plugin=0x%08X modid=%d complete=%d",
-		(unsigned int)(uintptr_t)plugin, recovery_modid,
-		recovery_install_complete);
+static void recovery_init_observer(void *plugin)
+{
+	atomic_fetch_add(&init_in_flight,1);
+	debug_logf("recovery","init-enter plugin=0x%08X modid=%d patched=%d flags=0x%08X",
+		(unsigned int)(uintptr_t)plugin,recovery_modid,recovery_install_complete,
+		read_action_flags());
 	debug_log_flush();
+	native_init(plugin);
+	debug_logf("recovery","init-return flags=0x%08X",read_action_flags());
+	debug_log_flush();
+	atomic_fetch_sub(&init_in_flight,1);
+}
+#endif
 
-	if (enter_lifecycle()) {
-		if (recovery_modid < 0) {
-			install_result = install_recovery();
-		} else if (recovery_install_complete) {
-			install_result = 0;
+static int resolve_paf(void)
+{
+	tai_module_info_t module={0};
+	SceKernelModuleInfo info={0};
+	module.size=sizeof(module);info.size=sizeof(info);
+	if(taiGetModuleInfo("ScePaf",&module)<0 || module.module_nid!=active_profile->paf_nid ||
+		sceKernelGetModuleInfo(module.modid,&info)<0 ||
+		!info.segments[0].vaddr || info.segments[0].memsz!=0x300D00U ||
+		!info.segments[1].vaddr || info.segments[1].memsz<0xE000U) return RECOVERY_ERROR;
+	const uint8_t *text=info.segments[0].vaddr;
+	static const struct { uint32_t offset; unsigned int size; uint8_t bytes[12]; } checks[]={
+		{0x4722A,6,{0x2D,0xE9,0xF0,0x4F,0x8D,0xB0}},
+		{0x473D4,2,{0x70,0xB5}},
+		{0x472D0,10,{0xC8,0xF8,0x00,0x00,0xC2,0x69,0x01,0x32,0xC2,0x61}},
+		{0x473E6,8,{0x20,0x68,0xC1,0x69,0x01,0x39,0xC1,0x61}},
+		{0x471D8,10,{0x02,0x68,0x12,0x69,0x0A,0xB9,0x00,0x20,0x13,0xE0}},
+		{0x47218,6,{0x00,0x68,0x40,0x6A,0x70,0x47}},
+		{0x54580,4,{0x40,0x6D,0x70,0x47}},
+		{0x58E5E,10,{0x31,0x6A,0x09,0xB1,0x30,0x1C,0x88,0x47,0x01,0x20}},
+	};
+	for(unsigned int i=0;i<ARRAY_COUNT(checks);++i)
+		if(memcmp(text+checks[i].offset,checks[i].bytes,checks[i].size)) return RECOVERY_ERROR;
+	framework_slot=(void *)((uint8_t *)info.segments[1].vaddr+0x194U);
+	if(!*framework_slot) return RECOVERY_ERROR;
+	module_acquire=(void *)((uintptr_t)text+0x4722BU);
+	module_release=(void *)((uintptr_t)text+0x473D5U);
+	module_get_interface=(void *)((uintptr_t)text+0x471D9U);
+	debug_logf("recovery","paf-validated nid=0x%08X text=0x%08X module-acquire=0x%08X",
+		module.module_nid,(unsigned int)(uintptr_t)text,(unsigned int)(uintptr_t)module_acquire);
+	return 0;
+}
+
+static int matches_string(const PafString *str,const char *expected,unsigned int length)
+{
+	return str->data && str->length==length && !memcmp(str->data,expected,length+1);
+}
+static int matches_request(const PafLoadParam *param,LoadFinish finish)
+{
+	static const char name[]="dbrecovery_plugin";
+	static const char file[]="vs0:vsh/common/dbrecovery_plugin.suprx";
+	return param && finish==original_finish && param->module_interface_version==1 &&
+		param->module_option==1 && matches_string(&param->name,name,sizeof(name)-1) &&
+		matches_string(&param->module_file,file,sizeof(file)-1);
+}
+
+static void recovery_load_finished(void *plugin)
+{
+	int release=0;
+	atomic_fetch_add(&finish_in_flight,1);
+	debug_logf("recovery","load-finished plugin=0x%08X modid=%d flags=0x%08X",
+		(unsigned int)(uintptr_t)plugin,recovery_modid,read_action_flags());
+	/* The callback owns a valid Plugin until the client callback is invoked.
+	 * Check ModuleImpl reuse now; the client may itself unload the Plugin. */
+	if(enter_lifecycle()) {
+		if(plugin && preload.impl) {
+			PafModule *owner;
+			memcpy(&owner,(uint8_t *)plugin+48,sizeof(owner));
+			if(!owner || owner->impl!=preload.impl) {
+				preload_phase=PRELOAD_BLOCKED;
+				debug_logf("recovery","preload-owner-mismatch reference-retained=1");
+			}
 		}
-		run_recovery = recovery_install_complete || recovery_modid < 0;
 		leave_lifecycle();
-	} else {
-		debug_logf("recovery", "ready-blocked reason=busy");
 	}
-	debug_logf("recovery", "ready-callback install-result=%d modid=%d run_native=%d patched=%d",
-		install_result, recovery_modid, run_recovery, recovery_install_complete);
+	debug_logf("recovery","finish-native-enter callback=0x%08X",
+		(unsigned int)(uintptr_t)original_finish);
 	debug_log_flush();
-	(void)install_result;
-	if (!run_recovery) {
-		debug_logf("recovery", "ready-blocked reason=incomplete-or-busy");
+	original_finish(plugin);
+	debug_logf("recovery","finish-native-return");
+	debug_log_flush();
+	if(enter_lifecycle()) {
+		if(pending_loads) --pending_loads;
+		else debug_logf("recovery","finish-unbalanced reference-retained=1");
+		if(!pending_loads && preload_phase==PRELOAD_WAITING && preload.impl) {
+			preload_phase=PRELOAD_RELEASING;release=1;
+		}
+		leave_lifecycle();
+	}
+	if(release) {
+		/* May stop/unload the module on a failed Plugin load. Keep all locks
+		 * released so the private stop redirect can restore its patches. */
+		debug_logf("recovery","preload-release modid=%d",preload.impl->handle);
 		debug_log_flush();
-		__sync_sub_and_fetch(&ready_in_flight, 1);
-		return RECOVERY_ERROR;
+		module_release(&preload);
+		preload.impl=NULL; /* RELEASING excludes another writer. */
+		if(enter_lifecycle()) {
+			if(preload_phase!=PRELOAD_BLOCKED) preload_phase=PRELOAD_IDLE;
+			leave_lifecycle();
+		}
+		debug_logf("recovery","preload-released");
 	}
-	debug_logf("recovery", "ready-native-enter");
 	debug_log_flush();
-	result = TAI_CONTINUE(int, ready_hook_ref, plugin);
-	debug_logf("recovery", "ready-native-return result=%d", result);
+	atomic_fetch_sub(&finish_in_flight,1);
+}
+
+/* Called only after reserving PREPARING and validating the PAF helpers.
+ * Returns 1 with a retained preload, 0 for native fallback, -1 when blocked. */
+static int prepare_recovery_module(const PafLoadParam *param)
+{
+	int installed=RECOVERY_ERROR,mode;
+	if(recovery_modid<0) {
+		tai_module_info_t existing={0};existing.size=sizeof(existing);
+		if(taiGetModuleInfo("SceDbRecovery",&existing)>=0) {
+			debug_logf("recovery","preload-skipped reason=untracked-existing-module modid=%d",existing.modid);
+			return 0;
+		}
+	}
+	memcpy(&mode,(uint8_t *)*framework_slot+84,sizeof(mode));
+	int module_option=param->module_option|(mode==5?2:0);
+	debug_logf("recovery","preload-enter module-option=%d",module_option);
 	debug_log_flush();
-	__sync_sub_and_fetch(&ready_in_flight, 1);
-	return result;
+	module_acquire(&preload,param->module_file.data,NULL,module_option,NULL);
+	debug_logf("recovery","preload-return impl=0x%08X modid=%d result=%d",
+		(unsigned int)(uintptr_t)preload.impl,preload.impl?preload.impl->handle:-1,
+		preload.impl?preload.impl->result:RECOVERY_ERROR);
+	debug_log_flush();
+	if(!preload.impl || preload.impl->result || preload.impl->handle<=0) {
+		/* A retained failed ModuleImpl would poison native LoadAsync retries. */
+		if(preload.impl) module_release(&preload);
+		preload.impl=NULL;return 0;
+	}
+	const void *module_interface=module_get_interface(&preload,param->module_interface_version);
+	if(!module_interface) {
+		debug_logf("recovery","preload-skipped reason=missing-module-interface");
+		module_release(&preload);preload.impl=NULL;return 0;
+	}
+	if(!enter_lifecycle()) return -1;
+	if(recovery_modid<0) installed=install_recovery(preload.impl->handle,module_interface);
+	else if(recovery_modid==preload.impl->handle && recovery_install_complete) installed=0;
+	if(installed<0 && recovery_modid>=0) {
+		preload_phase=PRELOAD_BLOCKED;leave_lifecycle();return -1;
+	}
+	pending_loads=1;preload_phase=PRELOAD_WAITING;
+	leave_lifecycle();
+	debug_logf("recovery","preload-prepared patched=%u before-initializer=1",installed==0);
+	debug_log_flush();return 1;
+}
+
+static void recovery_load_hook(const PafLoadParam *param,LoadFinish finish,int option)
+{
+	atomic_fetch_add(&load_in_flight,1);
+	if(!matches_request(param,finish)) {
+		debug_logf("recovery","load-passthrough reason=request-mismatch");
+		original_load(param,finish,option);goto done;
+	}
+	if(!enter_lifecycle()) goto blocked;
+	if(stop_in_flight) {leave_lifecycle();goto blocked;}
+	if(preload_phase==PRELOAD_WAITING) {
+		++pending_loads;leave_lifecycle();
+		original_load(param,recovery_load_finished,option);goto done;
+	}
+	if(preload_phase!=PRELOAD_IDLE || stop_in_flight) {leave_lifecycle();goto blocked;}
+	preload_phase=PRELOAD_PREPARING;leave_lifecycle();
+	if(resolve_paf()<0) {
+		debug_logf("recovery","preload-skipped reason=paf-validation");goto fallback;
+	}
+	int prepared=prepare_recovery_module(param);
+	if(prepared<0) goto blocked;
+	if(!prepared) goto fallback;
+	debug_logf("recovery","load-native-enter");debug_log_flush();
+	original_load(param,recovery_load_finished,option);
+	debug_logf("recovery","load-native-return");goto done;
+fallback:
+	if(enter_lifecycle()) {
+		preload_phase=PRELOAD_IDLE;leave_lifecycle();
+		original_load(param,finish,option);goto done;
+	}
+blocked:
+	debug_logf("recovery","load-blocked phase=%d retained-modid=%d",preload_phase,recovery_modid);
+	debug_log_flush();
+done:
+	atomic_fetch_sub(&load_in_flight,1);
+}
+
+static void encode_mov(uint8_t *p,unsigned int op,unsigned int reg,uint16_t value)
+{
+	uint16_t a=op|(value>>12)|((value>>1)&0x400), b=((value<<4)&0x7000)|(reg<<8)|(value&255);
+	p[0]=a;p[1]=a>>8;p[2]=b;p[3]=b>>8;
+}
+
+int recovery_start(SceUID shell_modid,uint32_t shell_nid,const SceKernelModuleInfo *info)
+{
+	if(initialized) return RECOVERY_ERROR;
+	active_profile=NULL;
+	for(unsigned int i=0;i<ARRAY_COUNT(recovery_profiles);++i)
+		if(recovery_profiles[i].shell_nid==shell_nid) active_profile=&recovery_profiles[i];
+	if(!active_profile || !info || !info->segments[0].vaddr ||
+		info->segments[0].memsz!=active_profile->shell_text_size) return RECOVERY_ERROR;
+	uintptr_t base=(uintptr_t)info->segments[0].vaddr;
+	if(base&3U) return RECOVERY_ERROR;
+	uint8_t expected[16]={0,0,0,0,0x08,0xA8,0,0,0,0,0x00,0x22,0,0,0,0},call[4];
+	uintptr_t callback=base+SHELL_RECOVERY_READY_OFFSET+1U;
+	encode_mov(expected,0xF240,1,(uint16_t)callback);
+	encode_mov(expected+6,0xF2C0,1,(uint16_t)(callback>>16));
+	memcpy(expected+12,active_profile->load_call,4);
+	if(memcmp((void *)(base+SHELL_RECOVERY_LOAD_CALL_OFFSET-12),expected,sizeof(expected)) ||
+		shell_detour_encode_call(call,base+SHELL_RECOVERY_LOAD_CALL_OFFSET,(uintptr_t)recovery_load_hook|1U)<0) {
+		debug_logf("recovery","start-rejected reason=load-call-validation");return RECOVERY_ERROR;
+	}
+	int result=sceKernelCreateLwMutex(&lifecycle_mutex,"LiveAreaNoLimitsRecovery",0,0,NULL);
+	if(result<0) return result;
+	initialized=1;clear_patch_ids();
+	original_load=(void *)(base+active_profile->load_import);
+	original_finish=(void *)callback;
+	load_call_id=taiInjectData(shell_modid,0,SHELL_RECOVERY_LOAD_CALL_OFFSET,call,sizeof(call));
+	debug_logf("recovery","load-call-installed uid=%d offset=0x%08X original=0x%08X ready-entry-unmodified=1",
+		load_call_id,SHELL_RECOVERY_LOAD_CALL_OFFSET,(unsigned int)(uintptr_t)original_load);
+	debug_log_flush();
+	if(load_call_id<0) {
+		result=load_call_id;sceKernelDeleteLwMutex(&lifecycle_mutex);initialized=0;
+		return result;
+	}
+	return 0;
 }
 
 int recovery_stop(void)
 {
-	int result = 0;
-
-	debug_logf("recovery", "plugin-stop initialized=%d modid=%d redirect=%d ready_hook=%d",
-		initialized, recovery_modid, stop_redirect_id, ready_hook_id);
-	if (!initialized)
-		return 0;
-	if (!enter_lifecycle()) {
-		debug_logf("recovery", "plugin-stop blocked reason=busy");
+	if(!initialized) return 0;
+	/* As with the per-instance cache, a live SceShell call site can dispatch
+	 * callbacks later. Switch builds by reboot, never by hot-unloading it. */
+	if(load_call_id>=0 || load_in_flight || finish_in_flight || init_in_flight || stop_in_flight ||
+		preload.impl || recovery_modid>=0 || stop_redirect_id>=0) {
+		debug_logf("recovery","plugin-stop cancelled reason=live-call-site-or-module");
 		return RECOVERY_ERROR;
 	}
-	if (recovery_modid >= 0 || stop_redirect_id >= 0 || ready_in_flight != 0) {
-		debug_logf("recovery", "plugin-stop blocked reason=module-or-callback-active callbacks=%u",
-			(unsigned int)ready_in_flight);
-		leave_lifecycle();
-		return RECOVERY_ERROR;
-	}
-	if (ready_hook_id >= 0) {
-		result = taiHookRelease(ready_hook_id, ready_hook_ref);
-		debug_logf("recovery", "ready-hook-release uid=%d result=%d", ready_hook_id, result);
-		if (result >= 0)
-			ready_hook_id = -1;
-	}
-	if (result >= 0) {
-		active_profile = NULL;
-		initialized = 0;
-	}
-	leave_lifecycle();
-	debug_logf("recovery", "plugin-stop return=%d initialized=%d", result, initialized);
-	debug_log_flush();
+	int result=sceKernelDeleteLwMutex(&lifecycle_mutex);
+	if(result>=0) initialized=0;
 	return result;
-}
-
-int recovery_start(SceUID shell_modid, uint32_t shell_nid,
-	const SceKernelModuleInfo *shell_info)
-{
-	const uint8_t *text;
-	unsigned int index;
-
-	debug_logf("recovery", "start shell_modid=%d shell_nid=0x%08X initialized=%d hook=0x%08X stop_redirect=0x%08X",
-		shell_modid, (unsigned int)shell_nid, initialized,
-		(unsigned int)(uintptr_t)recovery_ready_hook,
-		(unsigned int)(uintptr_t)recovery_module_stop_redirect);
-	if (initialized) {
-		debug_logf("recovery", "start-rejected reason=already-initialized");
-		return RECOVERY_ERROR;
-	}
-	active_profile = NULL;
-	for (index = 0; index < ARRAY_COUNT(recovery_profiles); ++index) {
-		if (recovery_profiles[index].shell_nid == shell_nid) {
-			active_profile = &recovery_profiles[index];
-			break;
-		}
-	}
-	if (active_profile == NULL) {
-		debug_logf("recovery", "start-rejected reason=profile-missing");
-		goto fail;
-	}
-	debug_logf("recovery", "profile-selected recovery_nid=0x%08X expected_text=0x%08X",
-		(unsigned int)active_profile->recovery_nid,
-		(unsigned int)active_profile->shell_text_size);
-	if (shell_info == NULL ||
-		shell_info->segments[0].vaddr == NULL ||
-		shell_info->segments[0].memsz != active_profile->shell_text_size) {
-		debug_logf("recovery", "start-rejected reason=shell-segment");
-		goto fail;
-	}
-	text = shell_info->segments[0].vaddr;
-	if (memcmp(text + SHELL_RECOVERY_READY_OFFSET,
-		active_profile->ready_prefix, sizeof(active_profile->ready_prefix)) != 0) {
-		debug_logf("recovery", "start-rejected reason=ready-bytes");
-		debug_log_hex("recovery", "ready-actual", SHELL_RECOVERY_READY_OFFSET,
-			text + SHELL_RECOVERY_READY_OFFSET, sizeof(active_profile->ready_prefix));
-		debug_log_hex("recovery", "ready-expected", SHELL_RECOVERY_READY_OFFSET,
-			active_profile->ready_prefix, sizeof(active_profile->ready_prefix));
-		goto fail;
-	}
-
-	/* SceShell code is process-local; shared-library lifecycle hooks are not. */
-	ready_hook_id = taiHookFunctionOffset(&ready_hook_ref, shell_modid, 0,
-		SHELL_RECOVERY_READY_OFFSET, 1, recovery_ready_hook);
-	debug_logf("recovery", "ready-hook-install result=%d offset=0x%08X",
-		ready_hook_id, SHELL_RECOVERY_READY_OFFSET);
-	if (ready_hook_id < 0)
-		goto fail;
-	clear_patch_ids();
-	stop_redirect_id = -1;
-	clear_recovery_state();
-	initialized = 1;
-	debug_logf("recovery", "ready-hook uid=%d offset=0x%08X",
-		ready_hook_id, SHELL_RECOVERY_READY_OFFSET);
-	debug_log_flush();
-	return 0;
-
-fail:
-	debug_logf("recovery", "start-failed baseline-capacity-retained");
-	debug_log_flush();
-	active_profile = NULL;
-	ready_hook_id = -1;
-	return RECOVERY_ERROR;
 }

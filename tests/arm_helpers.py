@@ -51,23 +51,24 @@ def word(u, address, value):
     u.mem_write(address, struct.pack("<I", value))
 
 
-def encode(u, symbols, source, target):
+def encode(u, symbols, source, target, function="shell_detour_encode_branch"):
     u.reg_write(reg.UC_ARM_REG_R0, HEAP + 0x8000)
     u.reg_write(reg.UC_ARM_REG_R1, source)
     u.reg_write(reg.UC_ARM_REG_R2, target)
     u.reg_write(reg.UC_ARM_REG_LR, RETURN | 1)
-    u.emu_start(symbols["shell_detour_encode_branch"] | 1, RETURN, count=200)
+    u.emu_start(symbols[function] | 1, RETURN, count=200)
     assert u.reg_read(reg.UC_ARM_REG_PC) == RETURN
     return u.reg_read(reg.UC_ARM_REG_R0), bytes(u.mem_read(HEAP + 0x8000, 4))
 
 
-def check_encoder(plugin):
+def check_encoder(plugin, link=False):
     u = machine(plugin)
     source = 0x81880002
+    function = "shell_detour_encode_call" if link else "shell_detour_encode_branch"
     cases = 0
     for delta in [-16777216, -16777214, -4096, -2, 0, 2, 4094, 16777214]:
         target = source + 4 + delta
-        result, code = encode(u, plugin[2], source, target | 1)
+        result, code = encode(u, plugin[2], source, target | 1, function)
         assert result == 0
         # Execute the emitted instruction, even for a distant target. Stop at
         # that target before any instruction there needs to be meaningful.
@@ -80,11 +81,12 @@ def check_encoder(plugin):
         u.ctl_remove_cache(source, source + 4)
         u.emu_start(source | 1, target, count=1)
         assert u.reg_read(reg.UC_ARM_REG_PC) == target, (delta, code.hex(), hex(target), hex(u.reg_read(reg.UC_ARM_REG_PC)))
+        if link: assert u.reg_read(reg.UC_ARM_REG_LR) == (source + 4) | 1
         cases += 1
     for src, target in [(source, source + 4 - 16777218 | 1),
                         (source, source + 4 + 16777216 | 1),
                         (source | 1, source + 9), (source, source + 8),
                         (0xFFFFFFFE, 1)]:
-        assert encode(u, plugin[2], src, target)[0] == 0xFFFFFFFF
+        assert encode(u, plugin[2], src, target, function)[0] == 0xFFFFFFFF
         cases += 1
     return cases
