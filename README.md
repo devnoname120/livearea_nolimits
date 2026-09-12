@@ -6,6 +6,11 @@ instead of hooking shared PAF executable code. It retains single-victim LRU
 texture eviction and artwork reload, uses one SUPRX, and disables runtime logging.
 Replace your existing SUPRX and fully reboot to upgrade.
 
+The `fix/recovery-init-order` branch contains the **v1.9.1-rc1 recovery candidate**.
+It moves recovery patching before Plugin initialization; matching logging-enabled
+builds are for the reporters in #8/#10. The regular v1.9.0 release remains unchanged.
+See [recovery timing and validation](docs/recovery.md).
+
 The 50-page, 500-top-level and 4,000-counted-icon limits are unchanged. Hidden-app
 recovery is unchanged too: fresh hidden-app restoration in
 [#10](https://github.com/devnoname120/livearea_nolimits/issues/10) and the reported

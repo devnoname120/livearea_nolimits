@@ -30,3 +30,10 @@ SceUID shell_detour_install(SceUID module, uint32_t offset,
 		return -1;
 	return taiInjectData(module, 0, offset, branch, sizeof(branch));
 }
+
+int shell_detour_encode_call(uint8_t out[4], uintptr_t source, uintptr_t target)
+{
+	int result=shell_detour_encode_branch(out,source,target);
+	if(result>=0) out[3]|=0x40; /* B.W T4 -> BL T1; same displacement, sets LR. */
+	return result;
+}

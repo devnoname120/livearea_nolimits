@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.1-rc1 - 2026-09-12
+
+- Fix hidden-app recovery patch timing: preload the recovery module at the
+  SceShell recovery-load call and patch it before PAF Plugin initialization.
+- Reuse the native PAF module cache and balance the extra module reference after
+  load completion, including failed and duplicate loads. Remove the later
+  recovery-ready entry hook and call its original void callback directly.
+- Keep interception process-local. No shared PAF/SceLibKernel code hooks and no
+  private controller recovery are introduced. Capacity/cache behavior is unchanged.
+- Add diagnostic initializer, preload, completion and cleanup events. Publish
+  logging-enabled normal and no-cache comparisons for reporters.
+
+Offline ARM tests reproduce the correct restoration decision for both reporters
+(500 visible plus 49/73 hidden). They do not prove that issue #8’s boot freeze is
+resolved or that the real database/UI recovered; hardware confirmation is pending.
+
 ## 1.9.0 - 2026-09-12
 
 - Replace shared PAF cache/consumer hooks with private virtual tables on

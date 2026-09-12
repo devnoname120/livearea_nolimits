@@ -191,24 +191,9 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
                 subprocess.run([str(hook_test), paf, offsets["PAF_EVICT_OFFSET"],
                                 offsets["PAF_SCAN_OFFSET"], shell, init_offset,
                                 offsets["PAF_APPLY_OFFSET"]], check=True)
-        recovery_offsets = dict(re.findall(
-            r"#define\s+(SHELL_RECOVERY_READY_OFFSET)\s+(0x[0-9A-Fa-f]+)U",
-            (root / "src/recovery.c").read_text()))
-        recovery_hook_test = work / "test_recovery_hook_transform"
-        subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
-            "-std=gnu11", "-DFORCE_TARGET_arm",
-            "-I", str(substitute / "lib"), "-I", str(substitute / "generated"),
-            str(root / "tests/test_recovery_hook_transform.c"),
-            str(substitute / "lib/jump-dis.c"),
-            str(substitute / "lib/cbit/vec.c"),
-            str(substitute / "lib/strerror.c"),
-            "-o", str(recovery_hook_test)], check=True)
-        for nid, _, shell, _ in cache_inputs:
-            if shell:
-                print(f"Recovery callback relocator profile: 0x{nid:08X}", flush=True)
-                subprocess.run([str(recovery_hook_test), shell,
-                                recovery_offsets["SHELL_RECOVERY_READY_OFFSET"]],
-                               check=True)
+        # Current recovery interception uses a checked BL call-site rewrite,
+        # not a libsubstitute function trampoline. The old ready-entry hook is
+        # intentionally absent; its replacement is tested by the ARM preload harness.
     arm_python = os.environ.get("LIVEAREA_TEST_ARM_PYTHON")
     if arm_python:
         subprocess.run([arm_python, str(root / "tests/test_recovery_stop_redirect.py")],
