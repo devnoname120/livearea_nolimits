@@ -1,123 +1,103 @@
-# LiveArea NoLimits
+# livearea_nolimits
 
-**[Download v1.9.0](https://github.com/devnoname120/livearea_nolimits/releases/tag/v1.9.0).**
-The icon-cache correction now changes SceShell's own icon-pool and image objects
-instead of hooking shared PAF executable code. It retains single-victim LRU
-texture eviction and artwork reload, uses one SUPRX, and disables runtime logging.
-Replace your existing SUPRX and fully reboot to upgrade.
+livearea_nolimits is a taiHEN user plugin that expands the PlayStation Vita and
+PSTV home-screen capacity. It supports large application libraries and manages
+icon artwork caching as you scroll through LiveArea.
 
-The 50-page, 500-top-level and 4,000-counted-icon limits are unchanged. Hidden-app
-recovery is unchanged too: fresh hidden-app restoration in
-[#10](https://github.com/devnoname120/livearea_nolimits/issues/10) and the reported
-recovery-time boot failure in [#8](https://github.com/devnoname120/livearea_nolimits/issues/8)
-remain unresolved. This cache change does not claim to fix those recovery issues.
+**[Download the latest release](https://github.com/devnoname120/livearea_nolimits/releases/latest)**
 
-Earlier reporters using rc1 confirmed improvements to VitaShell rename/edit, delayed
-crashes on one setup, and PSTV page creation after correcting the configuration.
-Remaining PSP/PSX launch and system-hang reports are still being investigated in
-[#6](https://github.com/devnoname120/livearea_nolimits/issues/6). Actual hidden-app
-restoration with the replacement recovery callback and the full capacity remain
-unconfirmed on affected hardware. See [diagnostics](docs/diagnostics.md) if you are
-already following a test request in an issue.
+## Limits
 
-`livearea_nolimits.suprx` is a taiHEN user plugin for the PlayStation Vita retail
-FW 3.60 and FW 3.65 `SceShell`, with a separate PTEL/testkit 3.60 profile.
-It changes the home-screen limits to:
+| Item | Official limit | **With livearea_nolimits** |
+| --- | ---: | ---: |
+| LiveArea pages | 10 | **50** |
+| Top-level icons in total | 100 | **500** |
+| Application/content icons, including those inside folders | 500 | **4,000** |
 
-- 50 pages;
-- 10 top-level icons per page, unchanged from the firmware;
-- 500 top-level icons in total;
-- 4,000 counted application/content icons instead of 500.
+Each folder occupies one top-level slot. Applications inside folders count toward
+the 4,000 application/content limit without taking additional top-level slots.
 
-The 4,000 counted-icon limit is included in v1.8.0. The already-published
-v1.8.0-rc1 diagnostic remains at 1,000; its assets are unchanged.
+## Compatibility
 
-The plugin validates every original instruction before applying any injection.
-It selects a patch profile by the loaded `SceShell` module NID and verifies its
-text-segment size and the expected code at every patch site. HENkaku version
-spoofing can remain enabled: the plugin does not use the system-version API. This
-protects unsupported firmware versions and already-modified shells from blind
-writes. Version 1.9.0 is built in Release mode with runtime logging disabled,
-including when the icon-cache correction is enabled.
+A system with taiHEN plugin support is required. Supported firmware:
 
-Version 1.7.0 changed hidden-application recovery by retaining the seven validated
-`SceDbRecovery` instruction patches while removing the unsafe pre-start allocator
-hook. On retail 3.65, the release candidate restored 73 hidden applications into
-a 500-visible-application library, producing 573 visible applications across 15
-pages. This historical result does not validate v1.8.0's replacement callback or
-resolve the separate shared-hook defect in v1.7.0. See
-[the recovery notes](docs/recovery.md).
+- Retail PS Vita and PSTV: **3.60 or 3.65**.
+- PTEL/testkit: **3.60**.
 
-The supported features are:
+Compatibility depends on the actual firmware, not the spoofed version shown by
+HENkaku. The plugin validates the loaded modules and expected instructions before
+applying patches.
 
-| Feature | Retail 3.60 | Retail 3.65 | PTEL 3.60 |
-| --- | --- | --- | --- |
-| 500 top-level icons / 50 pages | Yes | Yes | Yes |
-| 4,000 counted application/content icons | Yes | Yes | Yes |
-| Hidden-application recovery extension | Yes | Yes | Yes |
-| LRU icon-cache eviction and artwork reload | Yes | Yes | Yes |
+## Installation
 
-All runtime patches remain conditional on successful module and code validation.
-The current cache implementation is validated against all three firmware profiles.
-A diagnostic build of this policy was tested on a retail 3.60 Vita: boot, rapid
-forward/reverse scrolling, allocation pressure and artwork reload completed.
-Retail 3.65 and PTEL have offline firmware/ARM validation for this implementation;
-the older recovery hardware results do not substitute for that cache testing.
-See [the per-instance cache notes](docs/instance-cache.md) for offsets, ownership
-and verification limits. Brief white placeholders can still appear while cold
-or evicted artwork loads; the 2 MiB icon texture pool has not been enlarged.
+Before installing, back up your active taiHEN configuration and the LiveArea
+layout database at `ur0:shell/db/app.db`. Keep these backups somewhere accessible
+from a computer.
 
-Pages after the original first ten use the firmware's default page appearance.
-The plugin intentionally leaves the ten-entry custom theme/layout table bounds
-unchanged so that extra pages cannot read beyond that table.
+1. Download `livearea_nolimits.suprx` from the
+   [latest release](https://github.com/devnoname120/livearea_nolimits/releases/latest).
+2. Copy it to `ur0:tai/livearea_nolimits.suprx`.
+3. Add the following entry under `*main` in your active taiHEN `config.txt`:
 
-Version 1.4.0 replaced the previous 255-icon/26-page limits with wider, same-size
-instruction blocks. The count was already 32-bit; no database-format change is
-required. Retail 3.65 has now run 573 visible applications across 15 pages, but
-500 top-level icons on all 50 pages remain untested. See
-[the capacity implementation and validation notes](docs/top-level-capacity.md).
+   ```text
+   *main
+   ur0:tai/livearea_nolimits.suprx
+   ```
 
-Version 1.2 corrects the firmware profiles in 1.0/1.1: the original reference
-was PTEL 3.60, and the profile previously labeled 3.65 was actually retail 3.60.
-The retail 3.65 profile is now mapped against an identified 3.65 update image.
-See [firmware validation](docs/firmware-validation.md) for the binary identities
-and verification details.
+   The configuration is usually `ur0:tai/config.txt`. If `ux0:tai/config.txt`
+   exists, it takes precedence; edit the configuration your system uses.
+4. Fully reboot the system. Standby does not reload the plugin.
 
-Version 1.3 adds the retail 3.60 icon-cache correction used by the GitHub release
-binary. It keeps texture residency bounded with single-victim LRU eviction and
-preserves pending widget requests while evicted artwork reloads. The correction
-validates the relevant SceShell/ScePaf code and data references before installing
-its hooks; if that optional path is unavailable, the baseline page/count patches
-remain active. That release uses only the baseline patches on retail 3.65 and
-PTEL 3.60.
-The historical implementation and device-validation record are in
-[the v1.3-v1.8 cache notes](docs/icon-cache-trial.md); v1.9 uses the per-instance
-implementation described above.
+Installation does not require deleting applications or rebuilding the database.
 
-Version 1.4.0 also extended boot recovery for applications already hidden by the
-old 500-application limit before this plugin was installed. Recovery uses the same
-configured application and page limits as the shell. Version 1.7.0 removes the
-pre-start allocator hook; the top-level limit is instead required to equal the
-physical page capacity, currently 50 pages times 10 icons. The implementation
-retains the native recovery algorithm rather than reinstalling applications,
-rebuilding the database, or hiding the warning. Hardware and offline validation
-are documented in [the recovery notes](docs/recovery.md).
+To update, replace the SUPRX at the configured path and fully reboot. Keep a
+single configuration entry for the plugin.
 
-## Build with the VitaSDK image
+## Behavior and limitations
 
-The current `gnuton/vitasdk-docker:latest` SDK image is based on Ubuntu 22.04
-and has glibc 2.35, while its bundled VitaSDK host compiler requires glibc 2.36
-and 2.38. The included multi-stage Dockerfile copies that exact VitaSDK into an
-Ubuntu 24.04 userspace.
+- Icon artwork stays cached until memory pressure requires eviction. Evicted
+  artwork reloads when needed; brief white placeholders can appear while cold or
+  evicted artwork loads.
+- Icon-cache management is limited to LiveArea; other applications keep their
+  normal caching behavior.
+- Pages after the first ten use the firmware's default page appearance.
+- Applications already hidden by the firmware may remain hidden. See the
+  [recovery notes](docs/recovery.md) for the recovery mechanism and its limitations.
+- Regular release builds have runtime logging disabled.
+
+### Disabling or removing the plugin
+
+An expanded layout can exceed the firmware's normal page or application limits.
+Before disabling or removing the plugin, restore a compatible layout/database.
+Otherwise, the system may be unable to finish booting into LiveArea.
+
+Holding `L` during boot skips taiHEN plugin loading, but does not shrink the
+layout. It is not sufficient recovery for a database that depends on the expanded
+limits. Keep a working plugin and a compatible `app.db` backup available.
+
+## Reporting a problem
+
+Check the [issues](https://github.com/devnoname120/livearea_nolimits/issues) for
+an existing report. Include your actual firmware version, device model, plugin
+version, other enabled plugins, and the steps that trigger the problem. Include
+any error code or crash dump produced by the failure.
+
+Diagnostic builds can provide logs for investigation. Follow the
+[diagnostic guidance](docs/diagnostics.md) and any instructions in your issue for
+choosing a build and collecting its logs.
+
+## Building from source
+
+With Docker installed, run these commands from the repository root. The included
+Dockerfile provides VitaSDK and the host build tools.
 
 ```sh
-docker build --platform linux/amd64 \
-  -t livearea-nolimits-vitasdk:ubuntu24.04 .
+docker build --platform linux/amd64 -t livearea-nolimits-vitasdk .
 
 docker run --rm --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
   -v "$PWD:/work" -w /work \
-  livearea-nolimits-vitasdk:ubuntu24.04 \
+  livearea-nolimits-vitasdk \
   cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DLIVEAREA_ICON_CACHE_TRIAL=ON \
@@ -127,66 +107,23 @@ docker run --rm --platform linux/amd64 \
 docker run --rm --platform linux/amd64 \
   --user "$(id -u):$(id -g)" \
   -v "$PWD:/work" -w /work \
-  livearea-nolimits-vitasdk:ubuntu24.04 \
+  livearea-nolimits-vitasdk \
   cmake --build build
 ```
 
-The result is `build/livearea_nolimits.suprx`. These options reproduce the release
-configuration: optimized code, the multi-firmware icon-cache correction, and no
-runtime logging. The project retains its explicit `-O2` optimization level.
+The output is `build/livearea_nolimits.suprx`, built with icon-cache management
+enabled and runtime logging disabled.
 
-The icon-cache correction defaults to `ON` in fresh configurations. The historical
-option name `LIVEAREA_ICON_CACHE_TRIAL` is retained for build compatibility; pass
-`-DLIVEAREA_ICON_CACHE_TRIAL=OFF` for an explicit limits/recovery-only build.
-Logging is controlled separately. `LIVEAREA_DEBUG_LOGGING` defaults to `OFF`;
-`LIVEAREA_ICON_CACHE_LOGGING` is a compatibility alias that enables the same
-unified logger when set to `ON`. Both are `OFF` in the release. Logless builds do not open,
-truncate, write, delete, or rotate a diagnostic file, even on validation failure;
-an existing log from an older build is left untouched.
+Set `LIVEAREA_ICON_CACHE_TRIAL=OFF` to disable icon-cache management. For diagnostic
+builds, set `LIVEAREA_DEBUG_LOGGING=ON` and provide a recognizable
+`LIVEAREA_DEBUG_BUILD_ID`. `LIVEAREA_ICON_CACHE_LOGGING=ON` also enables the logger.
 
-For recovery or cross-component diagnostics, enable `LIVEAREA_DEBUG_LOGGING` and
-set a recognizable `LIVEAREA_DEBUG_BUILD_ID`. The older v1.3.0 asset has startup
-diagnostics enabled and remains unchanged; the v1.4.0 through v1.9.0 regular
-release assets disable all runtime logging. See [the changelog](CHANGELOG.md).
+Run the host tests with `python3 tests/run.py`.
 
-Host startup and rollback tests can be run with `python3 tests/run.py`.
+The limits are defined in [src/limits.h](src/limits.h). The top-level limit must
+equal the page count times ten and cannot exceed the application/content limit.
+Replacement instructions must be able to encode the selected values.
 
-## Install
-
-Copy `livearea_nolimits.suprx` to `ur0:tai/`, then add it to the special SceShell
-section in `ur0:tai/config.txt`:
-
-```text
-*main
-ur0:tai/livearea_nolimits.suprx
-```
-
-Reboot so the plugin runs before the shell constructs its page container.
-Do not place this user plugin under `*KERNEL`.
-Do not place it under `*NPXS10015`; that title ID belongs to SceSettings.
-
-To upgrade, replace the existing SUPRX at the configured path and reboot.
-For the already-hidden-applications case, use a full reboot rather than standby.
-Do not delete applications or manually rebuild the database as a prerequisite
-for testing the recovery correction. Applications can still remain hidden when
-the configured total or top-level capacity is genuinely exhausted.
-
-An expanded database can exceed the stock shell's page or application limits.
-Disabling the plugin, including by holding L during boot, does not contract that
-database and can leave the stock shell unable to finish booting. Restore a
-stock-compatible `app.db` backup at the same time as disabling the plugin; Safe
-Mode database rebuild is the destructive fallback.
-
-This is an FW 3.60/FW 3.65 system-shell patch. Keep a working plugin-recovery
-method before installing it. Holding `L` during boot normally suppresses taiHEN
-plugin loading and allows a bad configuration entry to be removed.
-
-## Changing the limits
-
-The limits are in `src/limits.h`. Page limits still use 8-bit Thumb immediate
-fields, but the top-level count uses wide Thumb-2 comparisons. The top-level and
-total limits must be encodable by the corresponding Thumb-2 instructions. Because
-the recovery allocator cannot safely be hooked before module relocation, the
-top-level limit must equal `page limit * 10`; it also cannot exceed the counted-
-icon limit. Ten icons per page remains fixed. The assembler rejects oversized
-instruction blocks; native tests also verify their exact footprints.
+For implementation details, see the [capacity notes](docs/top-level-capacity.md),
+[icon-cache design](docs/instance-cache.md), and
+[firmware validation](docs/firmware-validation.md).
