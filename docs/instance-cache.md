@@ -44,6 +44,10 @@ while detours or instances remain live; replacing the SUPRX requires a reboot.
 
 ## Firmware profiles
 
+The [complete firmware matrix](firmware-compatibility.md) records expanded source
+support. PAF is selected by its own module NID; the devkit has a distinct text
+layout and virtual-table locations. The offsets below are the original profiles.
+
 Offsets are relative to the named SceShell segment.
 
 | Firmware | Shell NID | PAF NID | Text bytes | Data bytes | Pool slot, data | Pool init, text | Image request, text |

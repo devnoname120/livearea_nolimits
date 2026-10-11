@@ -1,5 +1,9 @@
 # Firmware profile validation
 
+For the complete source profile matrix and current offline checks, see
+[firmware compatibility](firmware-compatibility.md). The binary records below
+document the original three-profile mapping.
+
 Since version 1.2, the plugin selects the loaded `SceShell` by module NID and
 checks the exact text-segment size before the first injection. Current source
 validates 22 complete patch regions, including the two wider top-level blocks.

@@ -251,7 +251,9 @@ static void test_profile(const PatchProfile *profile)
 	g_module_nid = 0x03650000U; /* A version number is not a module identity. */
 	expect_rejection();
 	for (index = 0; index < ARRAY_SIZE(patch_profiles); ++index) {
-		if (patch_profiles[index].module_nid == profile->module_nid)
+		if (patch_profiles[index].module_nid == profile->module_nid ||
+			(patch_profiles[index].text_size == profile->text_size &&
+			 patch_profiles[index].patches == profile->patches))
 			continue;
 		reset_attempt(profile);
 		g_module_nid = patch_profiles[index].module_nid;

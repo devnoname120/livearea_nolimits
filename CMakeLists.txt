@@ -10,7 +10,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 	endif()
 endif()
 
-project(livearea_nolimits VERSION 2.0.0 LANGUAGES C ASM)
+project(livearea_nolimits VERSION 2.1.0 LANGUAGES C ASM)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 option(LIVEAREA_ICON_CACHE_TRIAL

@@ -21,8 +21,12 @@ the 4,000 application/content limit without taking additional top-level slots.
 
 A system with taiHEN plugin support is required. Supported firmware:
 
-- Retail PS Vita and PSTV: **3.60 or 3.65**.
-- PTEL/testkit: **3.60**.
+- Retail PS Vita and PSTV: **3.60–3.74**.
+- Testkit: **3.60, 3.61, 3.63, 3.65, 3.67, 3.68, 3.70, 3.72 and 3.73**.
+- Devkit: **3.60, 3.61, 3.63, 3.65, 3.67, 3.68, 3.69, 3.70, 3.71 and 3.73**.
+
+See the [firmware matrix](docs/firmware-compatibility.md) for exact builds,
+validation coverage and unverified combinations.
 
 Compatibility depends on the actual firmware, not the spoofed version shown by
 HENkaku. The plugin validates the loaded modules and expected instructions before

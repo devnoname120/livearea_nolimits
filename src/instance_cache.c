@@ -41,12 +41,9 @@ _Static_assert(offsetof(Cache, surface_pool) == 84 && offsetof(Pool, bytes) == 1
 _Static_assert(offsetof(Surface, references) == 24, "surface ABI");
 
 typedef struct { uint32_t shell, paf, text, data, pool_slot, initialize, request; } Profile;
-static const Profile profiles[] = {
-	{0x0552F692,0xCD679177,0x541B74,0x93FAC,0x6DEC,0x2C74,0xBD34E},
-	{0x5549BF1F,0x73F90499,0x5420F4,0x93FBC,0x6DFC,0x2CCC,0xBD3A6},
-	{0xEAB89D5C,0xCD679177,0x535CF4,0x92D1C,0x6BBC,0x2C74,0xBA976}
-};
-#include "instance_cache_firmware.h"
+#include "instance_cache_profiles.h"
+#include "paf_profiles.h"
+static const PafLayout *paf_layout;
 
 #define MAX_IMAGES 8192U
 #define MAX_PINS 32U
@@ -272,7 +269,7 @@ static int table_matches(const uintptr_t *table,const uint32_t *expected,unsigne
 {
 	for (unsigned i=0;i<count;++i) {
 		uintptr_t value=expected[i];
-		if (value && value<0x300D00U) value+=text;
+		if (value && value<paf_layout->text_size) value+=text;
 		if (table[i]!=value) return 0;
 	}
 	return 1;
@@ -292,30 +289,33 @@ static int setup_instances_inner(void)
 	if (++setup_attempts>8) return -1;
 	tai_module_info_t module={0}; SceKernelModuleInfo info={0};
 	module.size=sizeof(module);info.size=sizeof(info);
-	if(taiGetModuleInfo("ScePaf",&module)<0 || module.module_nid!=profile->paf ||
-		sceKernelGetModuleInfo(module.modid,&info)<0 || info.segments[0].memsz!=0x300D00 ||
-		!info.segments[0].vaddr || !info.segments[1].vaddr || info.segments[1].memsz<0x10250) goto bad;
+	if(taiGetModuleInfo("ScePaf",&module)<0 ||
+		!(paf_layout=paf_layout_for_nid(module.module_nid)) ||
+		sceKernelGetModuleInfo(module.modid,&info)<0 ||
+		info.segments[0].memsz!=paf_layout->text_size ||
+		!info.segments[0].vaddr || !info.segments[1].vaddr ||
+		info.segments[1].memsz!=paf_layout->data_size) goto bad;
 	uint8_t *text=info.segments[0].vaddr;uintptr_t base=(uintptr_t)text;
 	Pool *candidate=(*icon_pool_slot)->surface_pool;
 #if UINTPTR_MAX == UINT32_MAX
 	if ((uintptr_t)candidate>=0xE0000000U) goto bad;
 #endif
-	const uintptr_t *pt=(void *)(text+0x2E3960),*it=(void *)(text+0x2E101C);
+	const uintptr_t *pt=(void *)(text+paf_layout->pool_table),*it=(void *)(text+paf_layout->image_table);
 	if(candidate->bytes!=2097152 || candidate->vtable!=pt+2 ||
-		!table_matches(pt,expected_pool_table,7,base) || !table_matches(it,expected_image_table,30,base) ||
-		memcmp(text+0x8DD5A,expected_pool_allocate,sizeof(expected_pool_allocate)) ||
-		memcmp(text+0x8997A,expected_surface_release,sizeof(expected_surface_release)) ||
-		memcmp(text+0x13344,expected_get_surface,sizeof(expected_get_surface)) ||
-		memcmp(text+0x15FA08,expected_apply_status_call,sizeof(expected_apply_status_call))) goto bad;
-	cache_mutex=(void *)((uint8_t *)info.segments[1].vaddr+0xB238);
-	surface_mutex=(void *)((uint8_t *)info.segments[1].vaddr+0x10230);
+		!table_matches(pt,paf_layout->pool_values,7,base) || !table_matches(it,paf_layout->image_values,30,base) ||
+		memcmp(text+paf_layout->allocate,expected_pool_allocate,sizeof(expected_pool_allocate)) ||
+		memcmp(text+paf_layout->surface_release,expected_surface_release,sizeof(expected_surface_release)) ||
+		memcmp(text+paf_layout->get_surface,expected_get_surface,sizeof(expected_get_surface)) ||
+		memcmp(text+paf_layout->apply_status,expected_apply_status_call,sizeof(expected_apply_status_call))) goto bad;
+	cache_mutex=(void *)((uint8_t *)info.segments[1].vaddr+paf_layout->cache_mutex);
+	surface_mutex=(void *)((uint8_t *)info.segments[1].vaddr+paf_layout->surface_mutex);
 	if(!recursive_mutex(cache_mutex)||!recursive_mutex(surface_mutex)) {
 		debug_logf("instance-cache","mutex-check-deferred attempt=%d",setup_attempts);return -1;
 	}
-	lock_cache=(void *)(base+0x53E91);unlock_cache=(void *)(base+0x53EA5);
-	get_surface=(void *)(base+0x13345);release_surface=(void *)(base+0x8997B);
-	cache_clock=(void *)((uint8_t *)info.segments[1].vaddr+0xB224);
-	apply_status_return=base+0x15FA12;
+	lock_cache=(void *)(base+paf_layout->lock_cache+1U);unlock_cache=(void *)(base+paf_layout->unlock_cache+1U);
+	get_surface=(void *)(base+paf_layout->get_surface+1U);release_surface=(void *)(base+paf_layout->surface_release+1U);
+	cache_clock=(void *)((uint8_t *)info.segments[1].vaddr+paf_layout->cache_clock);
+	apply_status_return=base+paf_layout->apply_status_return;
 	original_pool=pt+2;original_primary=it+2;original_handle=it+20;
 	memcpy(pool_table,pt,sizeof(pool_table));memcpy(image_table,it,sizeof(image_table));
 	pool_table[2]=(uintptr_t)pool_dtor0;pool_table[3]=(uintptr_t)pool_dtor1;pool_table[4]=(uintptr_t)pool_allocate;
@@ -323,13 +323,13 @@ static int setup_instances_inner(void)
 	image_table[20]=(uintptr_t)handle_dtor0;image_table[21]=(uintptr_t)handle_dtor1;
 	image_table[22]=(uintptr_t)image_get_surface;image_table[24]=(uintptr_t)image_status;
 #if LIVEAREA_DEBUG_LOGGING
-	uint32_t scan_hash=hash_bytes(text+0x15E6A,32),apply_hash=hash_bytes(text+0x15F9E2,32);
+	uint32_t scan_hash=hash_bytes(text+paf_layout->scan,32),apply_hash=hash_bytes(text+paf_layout->apply_consumer,32);
 #endif
 	pool=candidate;ready=1;
 	__atomic_store_n(&pool->vtable,&pool_table[2],__ATOMIC_RELEASE);
 	debug_logf("instance-cache","active pool=0x%08X private_vtable=0x%08X paf_hooks=0 pool_bytes=%u recursive_mutexes=1 scan_hash=0x%08X apply_hash=0x%08X text_unchanged=%u",
 		(unsigned)(uintptr_t)pool,(unsigned)(uintptr_t)pool->vtable,pool->bytes,scan_hash,apply_hash,
-		scan_hash==hash_bytes(text+0x15E6A,32)&&apply_hash==hash_bytes(text+0x15F9E2,32));
+		scan_hash==hash_bytes(text+paf_layout->scan,32)&&apply_hash==hash_bytes(text+paf_layout->apply_consumer,32));
 	debug_log_flush();return 0;
 bad:
 	setup_attempts=9;debug_logf("instance-cache","PAF-or-pool-validation-failed");debug_log_flush();return -1;

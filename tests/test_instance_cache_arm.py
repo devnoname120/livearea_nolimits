@@ -24,21 +24,25 @@ IMAGE, SURFACE, WIDGET, WVT, OBJECT, HANDLE_PTR = [HEAP + n for n in (0x1000, 0x
 
 
 class Harness:
-    def __init__(self, plugin, paf, firmware):
+    def __init__(self, plugin, paf, firmware, spec=None):
         global PAF, DATA, CACHE_MUTEX, SURFACE_MUTEX
-        PAF, DATA = (0x83200E90, 0x811607E0) if firmware == 2 else (0x81000000, 0x81301000)
+        PAF, DATA = (int(spec["modules"]["paf"]["segments"][0]["vaddr"],16), int(spec["modules"]["paf"]["segments"][1]["vaddr"],16)) if spec else ((0x83200E90, 0x811607E0) if firmware == 2 else (0x81000000, 0x81301000))
         CACHE_MUTEX, SURFACE_MUTEX = DATA + 0xB238, DATA + 0x10230
         self.u = u = machine(plugin)
         self.sym = plugin[2]
         self.firmware = firmware
+        self.spec = spec
+        self.layout = spec["paf_layout"] if spec else {}
+        self.paf_nid = int(spec["modules"]["paf"]["nid"],16) if spec else [0xCD679177,0x73F90499,0xCD679177][firmware]
+        self.paf_text_size = len(paf)
         # The plugin's unrelocated ELF overlaps the first 0x50000 PAF bytes.
         # Only the exercised native ranges are mapped; GetSurface is an async
         # service mock. Its two-byte validation prefix is temporarily supplied.
-        if firmware == 2:
+        if firmware == 2 and not spec:
             u.mem_map(PAF & ~0xFFF, 0x302000)
             u.mem_write(PAF, paf)
         else:
-            u.mem_map(PAF + 0x50000, 0x2B1000)
+            u.mem_map(PAF + 0x50000, (len(paf)-0x50000+0xfff)&~0xfff)
             u.mem_write(PAF + 0x50000, paf[0x50000:])
         u.mem_map(DATA & ~0xFFF, 0x18000)
         self.depth = {}
@@ -61,7 +65,7 @@ class Harness:
         word(u, self.sym['icon_pool_slot'], SLOT)
         word(u, SLOT, ICON_POOL)
         word(u, ICON_POOL + 4, POOL)
-        word(u, POOL, PAF + 0x2E3968)
+        word(u, POOL, self.native("pool_table",0x2E3960)+8)
         word(u, POOL + 4, ALLOC)
         word(u, POOL + 12, 2097152)
         word(u, ALLOC, ALLOC + 32)
@@ -71,6 +75,9 @@ class Harness:
         word(u, self.sym['g_instance_request_resume'], RETURN + 0x501)
         word(u, self.sym['g_instance_pool_resume'], RETURN + 0x541)
         u.hook_add(UC_HOOK_CODE, self.step)
+
+    def native(self, name, default):
+        return PAF + self.layout.get(name, default)
 
     def read(self, address):
         return struct.unpack('<I', self.u.mem_read(address, 4))[0]
@@ -123,10 +130,10 @@ class Harness:
         if name == 'taiGetModuleInfo':
             assert self.cstring(args[0]) == 'ScePaf'
             word(u, args[1] + 4, 123)
-            word(u, args[1] + 8, [0xCD679177, 0x73F90499, 0xCD679177][self.firmware])
+            word(u, args[1] + 8, self.paf_nid)
         elif name == 'sceKernelGetModuleInfo':
             assert args[0] == 123
-            for i, (base, length) in enumerate([(PAF, 0x300D00), (DATA, 0x166D0)]):
+            for i, (base, length) in enumerate([(PAF, self.paf_text_size), (DATA, 0x166D0)]):
                 word(u, args[1] + 0x154 + i * 24 + 8, base)
                 word(u, args[1] + 0x154 + i * 24 + 12, length)
         elif name == 'taiInjectDataForUser':
@@ -162,13 +169,13 @@ class Harness:
         elif name == 'sceClibMemcpy':
             u.mem_write(args[0], bytes(u.mem_read(args[1], args[2])))
             self.ret(args[0]); return
-        elif pc in (PAF + 0x53E90, PAF + 0x53D50):
+        elif pc in (self.native("lock_cache",0x53E90), self.native("lock_cache",0x53E90)-0x140):
             self.ret(self.lock(args[0])); return
-        elif pc in (PAF + 0x53EA4, PAF + 0x53D64):
+        elif pc in (self.native("unlock_cache",0x53EA4), self.native("unlock_cache",0x53EA4)-0x140):
             self.ret(self.unlock(args[0])); return
-        elif pc == PAF + 0x8D90C:
+        elif pc == (PAF+(self.layout["expected_pool_table"][6]&~1) if self.spec else PAF+0x8D90C):
             self.ret(self.free); return
-        elif pc == PAF + 0x13344:
+        elif pc == self.native("get_surface",0x13344):
             assert args[1] == IMAGE and self.depth.get(CACHE_MUTEX)
             self.gets += 1
             surface = self.read(IMAGE + 156)
@@ -177,7 +184,7 @@ class Harness:
                 word(u, surface + 24, self.read(surface + 24) + 1)
             else:
                 u.mem_write(IMAGE + 10, b'\x01')  # Async reload queued.
-        elif pc in (PAF + 0x1405D4, PAF + 0x140908):
+        elif pc in (self.native("event_ctor",0x1405D4), self.native("event_dispatch",0x140908)):
             pass  # Event construction/dispatch; no rendering in this harness.
         elif pc in self.callbacks:
             self.ret(self.callbacks[pc](args)); return
@@ -200,7 +207,7 @@ class Harness:
                 u.reg_write(getattr(reg, f'UC_ARM_REG_R{i+4}'), saved[i])
             u.reg_write(reg.UC_ARM_REG_SP, sp + 24)
             u.reg_write(reg.UC_ARM_REG_PC, saved[-1]); return
-        elif pc == PAF + 0x15FA12 and self.pressure:
+        elif pc == self.native("apply_status_return",0x15FA12) and self.pressure:
             # Pause the real consumer between its status and getter. The test
             # then runs the real allocation callback on a second stack.
             self.pressure = False
@@ -227,7 +234,7 @@ class Harness:
             pc = u.reg_read(reg.UC_ARM_REG_PC)
             print(f'ARM failure at {pc:#x}: {bytes(u.mem_read(pc, 8)).hex()}')
             raise
-        if u.reg_read(reg.UC_ARM_REG_PC) == PAF + 0x15FA12:
+        if u.reg_read(reg.UC_ARM_REG_PC) == self.native("apply_status_return",0x15FA12):
             return None
         assert u.reg_read(reg.UC_ARM_REG_PC) == RETURN, hex(u.reg_read(reg.UC_ARM_REG_PC))
         assert u.reg_read(reg.UC_ARM_REG_SP) == STACK + 0xF000
@@ -238,12 +245,12 @@ class Harness:
 
     def setup(self):
         u = self.u
-        old = bytes(u.mem_read(PAF + 0x13344, 2))
-        u.mem_write(PAF + 0x13344, b'\x70\xb5')
-        before = bytes(u.mem_read(PAF + 0x50000, 0x2B0D00))
+        old = bytes(u.mem_read(self.native("get_surface",0x13344), 2))
+        u.mem_write(self.native("get_surface",0x13344), b'\x70\xb5')
+        before = bytes(u.mem_read(PAF + 0x50000, self.paf_text_size-0x50000))
         self.call('initialize_pool')
-        assert bytes(u.mem_read(PAF + 0x50000, 0x2B0D00)) == before
-        u.mem_write(PAF + 0x13344, old)
+        assert bytes(u.mem_read(PAF + 0x50000, self.paf_text_size-0x50000)) == before
+        u.mem_write(self.native("get_surface",0x13344), old)
         return self.read(self.sym['ready'])
 
     def shell_startup(self, shell, corrupt=False, fail_injection=-1):
@@ -289,10 +296,10 @@ class Harness:
         # branch, C callback and explicit PUSH replay into the native resume.
         word(u, data + slot, ICON_POOL)
         word(u, self.sym['g_instance_pool_resume'], RETURN + 0x541)
-        prefix = bytes(u.mem_read(PAF + 0x13344, 2))
-        u.mem_write(PAF + 0x13344, b'\x70\xb5')
+        prefix = bytes(u.mem_read(self.native("get_surface",0x13344), 2))
+        u.mem_write(self.native("get_surface",0x13344), b'\x70\xb5')
         self.call(base + init)
-        u.mem_write(PAF + 0x13344, prefix)
+        u.mem_write(self.native("get_surface",0x13344), prefix)
         assert self.read(self.sym['ready']) == 1
         word(u, self.sym['g_instance_request_resume'], RETURN + 0x501)
         self.request_entry = base + request
@@ -300,14 +307,14 @@ class Harness:
     def image(self, resident=True):
         u = self.u
         u.mem_write(IMAGE, bytes(160))
-        word(u, IMAGE, PAF + 0x2E1024)
+        word(u, IMAGE, self.native("image_table",0x2E101C)+8)
         word(u, IMAGE + 4, CACHE)
         u.mem_write(IMAGE + 8, b'\x01\x00\x02\x00')
         word(u, IMAGE + 16, 2)
         word(u, IMAGE + 76, 1)
         u.mem_write(IMAGE + 81, b'\x01')
         word(u, IMAGE + 84, 10); word(u, IMAGE + 88, 10)
-        word(u, IMAGE + 100, PAF + 0x2E106C)
+        word(u, IMAGE + 100, self.native("image_table",0x2E101C)+80)
         word(u, IMAGE + 156, SURFACE if resident else 0)
         word(u, SURFACE, SURFACE + 64)
         word(u, SURFACE + 68, RETURN + 0x121)
@@ -386,7 +393,7 @@ def main():
             if failure == 'nonrecursive': h.recursive = False
             if failure == 'table': word(h.u, PAF + 0x2E3968, 123)
             if failure == 'capacity': word(h.u, POOL + 12, 4096)
-            if failure == 'nid': word(h.u, h.sym['profile'], h.sym['profiles'] + (0 if firmware == 1 else 1)*28)
+            if failure == 'nid': h.paf_nid = 0xDEADBEEF
             if failure == 'consumer': h.u.mem_write(PAF + 0x15FA10, b'\x00\xbf')
             assert h.setup() == 0
             assert h.read(POOL) == PAF + 0x2E3968

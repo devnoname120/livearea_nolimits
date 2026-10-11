@@ -36,6 +36,7 @@ typedef struct {
 typedef struct {
 	uint32_t shell_nid, recovery_nid, shell_text_size, paf_nid, load_import;
 	uint8_t load_call[4];
+	uint32_t load_call_offset, ready_offset;
 } RecoveryProfile;
 
 /* PAF's native Module wrapper is a single owning ModuleImpl pointer. */
@@ -76,11 +77,10 @@ static const RecoveryPatch recovery_patches[] = {
 	{0x060FE, 4, {0x5F, 0xF0, 0x09, 0x09}, patch_movs_r9_last_page},
 };
 
-static const RecoveryProfile recovery_profiles[] = {
-	{0x0552F692U,0xC1F30F67U,0x541B74U,0xCD679177U,0x45CA50U,{0x5B,0xF0,0x18,0xE7}},
-	{0x5549BF1FU,0x3F76E38FU,0x5420F4U,0x73F90499U,0x45CE98U,{0x5C,0xF0,0x3C,0xE1}},
-	{0xEAB89D5CU,0xC1F30F67U,0x535CF4U,0xCD679177U,0x452C08U,{0x51,0xF0,0xF4,0xE7}},
-};
+#include "recovery_profiles.h"
+#include "paf_profiles.h"
+static const RecoveryModuleProfile *module_profile;
+static const PafLayout *paf_layout;
 
 static const uint8_t expected_stop_entry[] = {
 	0x10, 0xB5, 0x24, 0xF0, 0xC9, 0xFB, 0x00, 0x20, 0x10, 0xBD,
@@ -141,11 +141,11 @@ static int verify_recovery(const SceKernelModuleInfo *info)
 	unsigned int index;
 
 	if (info == NULL || info->segments[0].vaddr == NULL ||
-		info->segments[0].memsz != RECOVERY_TEXT_SIZE ||
+		info->segments[0].memsz != module_profile->text_size ||
 		info->segments[1].vaddr == NULL ||
-		info->segments[1].memsz != RECOVERY_DATA_SIZE) {
+		info->segments[1].memsz != module_profile->data_size) {
 		debug_logf("recovery", "validation-failed reason=segments expected_text=0x%08X expected_data=0x%08X",
-			RECOVERY_TEXT_SIZE, RECOVERY_DATA_SIZE);
+			module_profile->text_size, module_profile->data_size);
 		return RECOVERY_ERROR;
 	}
 #if UINTPTR_MAX == UINT32_MAX
@@ -165,24 +165,24 @@ static int verify_recovery(const SceKernelModuleInfo *info)
 			return RECOVERY_ERROR;
 		}
 	}
-	if (memcmp(text + RECOVERY_STOP_OFFSET, expected_stop_entry,
+	if (memcmp(text + RECOVERY_STOP_OFFSET, module_profile->stop_entry,
 			sizeof(expected_stop_entry)) != 0) {
 		debug_logf("recovery", "validation-failed reason=stop-entry");
 		debug_log_hex("recovery", "stop-actual", RECOVERY_STOP_OFFSET,
 			text + RECOVERY_STOP_OFFSET, sizeof(expected_stop_entry));
 		debug_log_hex("recovery", "stop-expected", RECOVERY_STOP_OFFSET,
-			expected_stop_entry, sizeof(expected_stop_entry));
+			module_profile->stop_entry, sizeof(expected_stop_entry));
 		return RECOVERY_ERROR;
 	}
 	for (index = 0; index < ARRAY_COUNT(recovery_patches); ++index) {
 		const RecoveryPatch *patch = &recovery_patches[index];
 
-		if (memcmp(text + patch->offset, patch->expected, patch->size) != 0) {
+		if (memcmp(text + patch->offset + module_profile->patch_delta, patch->expected, patch->size) != 0) {
 			debug_logf("recovery", "validation-failed reason=patch index=%u offset=0x%08X",
-				index, (unsigned int)patch->offset);
-			debug_log_hex("recovery", "patch-actual", patch->offset,
-				text + patch->offset, patch->size);
-			debug_log_hex("recovery", "patch-expected", patch->offset,
+				index, (unsigned int)(patch->offset + module_profile->patch_delta));
+			debug_log_hex("recovery", "patch-actual", patch->offset + module_profile->patch_delta,
+				text + patch->offset + module_profile->patch_delta, patch->size);
+			debug_log_hex("recovery", "patch-expected", patch->offset + module_profile->patch_delta,
 				patch->expected, patch->size);
 			return RECOVERY_ERROR;
 		}
@@ -288,12 +288,13 @@ static int install_recovery(SceUID expected_modid,const void *module_interface)
 	}
 	module.size = sizeof(module);
 	result = taiGetModuleInfo("SceDbRecovery", &module);
-	debug_logf("recovery", "module-lookup result=%d modid=%d nid=0x%08X expected=0x%08X",
+	module_profile=NULL;
+	if(result>=0) for(unsigned int i=0;i<ARRAY_COUNT(recovery_module_profiles);++i)
+		if(recovery_module_profiles[i].nid==module.module_nid) module_profile=&recovery_module_profiles[i];
+	debug_logf("recovery", "module-lookup result=%d modid=%d nid=0x%08X matched_profile=%u",
 		result, result < 0 ? -1 : module.modid,
-		result < 0 ? 0U : (unsigned int)module.module_nid,
-		(unsigned int)active_profile->recovery_nid);
-	if (result < 0 || module.modid != expected_modid ||
-		module.module_nid != active_profile->recovery_nid) {
+		result < 0 ? 0U : (unsigned int)module.module_nid, module_profile!=NULL);
+	if (result < 0 || module.modid != expected_modid || !module_profile) {
 		debug_logf("recovery", "install-rejected reason=module-identity");
 		return RECOVERY_ERROR;
 	}
@@ -321,15 +322,15 @@ static int install_recovery(SceUID expected_modid,const void *module_interface)
 	native_stop = (RecoveryStop)((uintptr_t)info.segments[0].vaddr +
 		RECOVERY_STOP_OFFSET + 1U);
 	native_init=(void *)((uintptr_t)info.segments[0].vaddr+RECOVERY_INITIALIZER_OFFSET+1U);
-	action_flags=(void *)((uint8_t *)info.segments[1].vaddr+RECOVERY_ACTION_FLAGS_OFFSET);
+	action_flags=(void *)((uint8_t *)info.segments[1].vaddr+module_profile->flags_offset);
 	clear_patch_ids();
 	for (index = 0; index < ARRAY_COUNT(recovery_patches); ++index) {
 		const RecoveryPatch *patch = &recovery_patches[index];
 
-		patch_ids[index] = taiInjectData(module.modid, 0, patch->offset,
+		patch_ids[index] = taiInjectData(module.modid, 0, patch->offset + module_profile->patch_delta,
 			patch->replacement, patch->size);
 		debug_logf("recovery", "patch-injected index=%u offset=0x%08X size=%u uid=%d",
-			index, (unsigned int)patch->offset, patch->size, patch_ids[index]);
+			index, (unsigned int)(patch->offset + module_profile->patch_delta), patch->size, patch_ids[index]);
 		if (patch_ids[index] < 0) {
 			result=patch_ids[index];patch_ids[index]=-1;goto rollback;
 		}
@@ -387,28 +388,29 @@ static int resolve_paf(void)
 	tai_module_info_t module={0};
 	SceKernelModuleInfo info={0};
 	module.size=sizeof(module);info.size=sizeof(info);
-	if(taiGetModuleInfo("ScePaf",&module)<0 || module.module_nid!=active_profile->paf_nid ||
+	if(taiGetModuleInfo("ScePaf",&module)<0 ||
+		!(paf_layout=paf_layout_for_nid(module.module_nid)) ||
 		sceKernelGetModuleInfo(module.modid,&info)<0 ||
-		!info.segments[0].vaddr || info.segments[0].memsz!=0x300D00U ||
-		!info.segments[1].vaddr || info.segments[1].memsz<0xE000U) return RECOVERY_ERROR;
+		!info.segments[0].vaddr || info.segments[0].memsz!=paf_layout->text_size ||
+		!info.segments[1].vaddr || info.segments[1].memsz!=paf_layout->data_size) return RECOVERY_ERROR;
 	const uint8_t *text=info.segments[0].vaddr;
-	static const struct { uint32_t offset; unsigned int size; uint8_t bytes[12]; } checks[]={
-		{0x4722A,6,{0x2D,0xE9,0xF0,0x4F,0x8D,0xB0}},
-		{0x473D4,2,{0x70,0xB5}},
-		{0x472D0,10,{0xC8,0xF8,0x00,0x00,0xC2,0x69,0x01,0x32,0xC2,0x61}},
-		{0x473E6,8,{0x20,0x68,0xC1,0x69,0x01,0x39,0xC1,0x61}},
-		{0x471D8,10,{0x02,0x68,0x12,0x69,0x0A,0xB9,0x00,0x20,0x13,0xE0}},
-		{0x47218,6,{0x00,0x68,0x40,0x6A,0x70,0x47}},
-		{0x54580,4,{0x40,0x6D,0x70,0x47}},
-		{0x58E5E,10,{0x31,0x6A,0x09,0xB1,0x30,0x1C,0x88,0x47,0x01,0x20}},
+	const struct { uint32_t offset; unsigned int size; uint8_t bytes[12]; } checks[]={
+		{paf_layout->module_acquire,6,{0x2D,0xE9,0xF0,0x4F,0x8D,0xB0}},
+		{paf_layout->module_release,2,{0x70,0xB5}},
+		{paf_layout->module_acquire+0xA6,10,{0xC8,0xF8,0x00,0x00,0xC2,0x69,0x01,0x32,0xC2,0x61}},
+		{paf_layout->module_release+0x12,8,{0x20,0x68,0xC1,0x69,0x01,0x39,0xC1,0x61}},
+		{paf_layout->module_interface,10,{0x02,0x68,0x12,0x69,0x0A,0xB9,0x00,0x20,0x13,0xE0}},
+		{paf_layout->module_interface+0x40,6,{0x00,0x68,0x40,0x6A,0x70,0x47}},
+		{paf_layout->lock_cache+0x6F0,4,{0x40,0x6D,0x70,0x47}},
+		{paf_layout->plugin_initializer_call,10,{0x31,0x6A,0x09,0xB1,0x30,0x1C,0x88,0x47,0x01,0x20}},
 	};
 	for(unsigned int i=0;i<ARRAY_COUNT(checks);++i)
 		if(memcmp(text+checks[i].offset,checks[i].bytes,checks[i].size)) return RECOVERY_ERROR;
-	framework_slot=(void *)((uint8_t *)info.segments[1].vaddr+0x194U);
+	framework_slot=(void *)((uint8_t *)info.segments[1].vaddr+paf_layout->framework_slot);
 	if(!*framework_slot) return RECOVERY_ERROR;
-	module_acquire=(void *)((uintptr_t)text+0x4722BU);
-	module_release=(void *)((uintptr_t)text+0x473D5U);
-	module_get_interface=(void *)((uintptr_t)text+0x471D9U);
+	module_acquire=(void *)((uintptr_t)text+paf_layout->module_acquire+1U);
+	module_release=(void *)((uintptr_t)text+paf_layout->module_release+1U);
+	module_get_interface=(void *)((uintptr_t)text+paf_layout->module_interface+1U);
 	debug_logf("recovery","paf-validated nid=0x%08X text=0x%08X module-acquire=0x%08X",
 		module.module_nid,(unsigned int)(uintptr_t)text,(unsigned int)(uintptr_t)module_acquire);
 	return 0;
@@ -573,12 +575,12 @@ int recovery_start(SceUID shell_modid,uint32_t shell_nid,const SceKernelModuleIn
 	uintptr_t base=(uintptr_t)info->segments[0].vaddr;
 	if(base&3U) return RECOVERY_ERROR;
 	uint8_t expected[16]={0,0,0,0,0x08,0xA8,0,0,0,0,0x00,0x22,0,0,0,0},call[4];
-	uintptr_t callback=base+SHELL_RECOVERY_READY_OFFSET+1U;
+	uintptr_t callback=base+active_profile->ready_offset+1U;
 	encode_mov(expected,0xF240,1,(uint16_t)callback);
 	encode_mov(expected+6,0xF2C0,1,(uint16_t)(callback>>16));
 	memcpy(expected+12,active_profile->load_call,4);
-	if(memcmp((void *)(base+SHELL_RECOVERY_LOAD_CALL_OFFSET-12),expected,sizeof(expected)) ||
-		shell_detour_encode_call(call,base+SHELL_RECOVERY_LOAD_CALL_OFFSET,(uintptr_t)recovery_load_hook|1U)<0) {
+	if(memcmp((void *)(base+active_profile->load_call_offset-12),expected,sizeof(expected)) ||
+		shell_detour_encode_call(call,base+active_profile->load_call_offset,(uintptr_t)recovery_load_hook|1U)<0) {
 		debug_logf("recovery","start-rejected reason=load-call-validation");return RECOVERY_ERROR;
 	}
 	int result=sceKernelCreateLwMutex(&lifecycle_mutex,"LiveAreaNoLimitsRecovery",0,0,NULL);
@@ -586,9 +588,9 @@ int recovery_start(SceUID shell_modid,uint32_t shell_nid,const SceKernelModuleIn
 	initialized=1;clear_patch_ids();
 	original_load=(void *)(base+active_profile->load_import);
 	original_finish=(void *)callback;
-	load_call_id=taiInjectData(shell_modid,0,SHELL_RECOVERY_LOAD_CALL_OFFSET,call,sizeof(call));
+	load_call_id=taiInjectData(shell_modid,0,active_profile->load_call_offset,call,sizeof(call));
 	debug_logf("recovery","load-call-installed uid=%d offset=0x%08X original=0x%08X ready-entry-unmodified=1",
-		load_call_id,SHELL_RECOVERY_LOAD_CALL_OFFSET,(unsigned int)(uintptr_t)original_load);
+		load_call_id,active_profile->load_call_offset,(unsigned int)(uintptr_t)original_load);
 	debug_log_flush();
 	if(load_call_id<0) {
 		result=load_call_id;sceKernelDeleteLwMutex(&lifecycle_mutex);initialized=0;

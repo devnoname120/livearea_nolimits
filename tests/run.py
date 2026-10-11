@@ -97,8 +97,8 @@ with tempfile.TemporaryDirectory(prefix="livearea-tests-") as temporary:
                 profiles = json.loads(subprocess.check_output([str(binary), "--profiles"]))
                 shell_profiles = {profile["nid"] for profile in json.loads(manifest.read_text())["profiles"]}
                 assert len(profiles) == len(set(profiles))
-                assert set(profiles) == shell_profiles, "Every supported shell must have a cache profile"
-                assert {nid for nid, _, _, _ in cache_inputs} == shell_profiles
+                assert set(profiles).issubset(shell_profiles), "Historical cache comparison profiles must remain recognized"
+                assert {nid for nid, _, _, _ in cache_inputs} == set(profiles)
                 for nid, paf, shell, _ in cache_inputs:
                     inputs = [hex(nid)]
                     if paf:

@@ -149,12 +149,7 @@ static const Patch patches_365[] = {
 	{0x360A9A, 4, {0xD0, 0xF5, 0xFA, 0x71}, patch_rsbs_r1_r0_icon_limit},
 };
 
-/* Select the actual shell binary; HENkaku can spoof the system-version API. */
-static const PatchProfile patch_profiles[] = {
-	{0x0552F692U, 0x541B74, patches_360, ARRAY_SIZE(patches_360)},
-	{0x5549BF1FU, 0x5420F4, patches_365, ARRAY_SIZE(patches_365)},
-	{0xEAB89D5CU, 0x535CF4, patches_ptel_360, ARRAY_SIZE(patches_ptel_360)},
-};
+#include "shell_profiles.h"
 
 _Static_assert(ARRAY_SIZE(patches_ptel_360) == ARRAY_SIZE(patches_360) &&
 	ARRAY_SIZE(patches_360) == ARRAY_SIZE(patches_365),

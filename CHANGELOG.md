@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.1.0 - 2026-10-11
+
+- Expand firmware profiles to all 12 retail versions from 3.60 through 3.74,
+  nine testkit builds and ten devkit builds. See the
+  [firmware matrix](docs/firmware-compatibility.md) for exact versions.
+- Select SceShell, PAF and recovery module layouts independently. Account for
+  devkit patch, callback and PAF offsets, and the testkit recovery action flag.
+  Validate module identities and expected instructions before applying patches.
+- Retain SceShell-owned icon-cache management, early hidden-application recovery,
+  50 pages, 500 top-level icons and 4,000 application/content icons.
+- Publish the regular SUPRX with runtime logging disabled, plus matching
+  diagnostic builds and symbols. Set the module version to 2.1.
+
+All 31 available firmware combinations pass offline compiled ARM capacity,
+cache and recovery checks, with host ASan/UBSan validation. These checks model
+OS services and rendering; they are not hardware boot or scrolling tests.
+Testkit 3.69, 3.71 and 3.74 and devkit 3.72 and 3.74 remain unverified because
+their firmware binaries are unavailable.
+
 ## 2.0.0 - 2026-09-12
 
 - Apply hidden-application recovery limits before native initialization, using

@@ -49,6 +49,12 @@ configured capacity.
 
 ## Binary profiles
 
+Source builds select SceShell, PAF and recovery layouts independently by their
+validated module NIDs; see the [complete firmware matrix](firmware-compatibility.md).
+The original retail-layout recovery offsets below have a four-byte shift on
+devkit. External testkit binaries have different segment dimensions and keep the
+action flag at data `+0x1108`. The tables below describe the original mappings.
+
 `src/recovery.c` selects a recovery identity paired with the actual shell identity.
 No firmware-version API or spoofed version string is used.
 
